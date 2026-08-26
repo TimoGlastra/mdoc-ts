@@ -7,8 +7,11 @@ import { hex } from '@owf/identity-common'
 import { hkdf } from '@panva/hkdf'
 import * as x509 from '@peculiar/x509'
 import { X509Certificate } from '@peculiar/x509'
+import { AEAD_AES_128_GCM, CipherSuite, KDF_HKDF_SHA256, KEM_DHKEM_P256_HKDF_SHA256 } from 'hpke'
 import { exportJWK, importX509 } from 'jose'
-import { CoseKey, type MdocContext } from '../src'
+import { CoseKey, HpkeSuiteId, type MdocContext } from '../src'
+
+const p256HpkeSuite = new CipherSuite(KEM_DHKEM_P256_HKDF_SHA256, KDF_HKDF_SHA256, AEAD_AES_128_GCM)
 
 export const mdocContext: MdocContext = {
   fetch,
@@ -26,6 +29,19 @@ export const mdocContext: MdocContext = {
       const ikm = p256.getSharedSecret(privateKey, publicKey, true).slice(1)
       const digestAlgorithm = da === 'SHA-384' ? 'sha384' : da === 'SHA-512' ? 'sha512' : 'sha256'
       return await hkdf(digestAlgorithm, ikm, salt, info, 32)
+    },
+    hpke: {
+      suites: [HpkeSuiteId.DhkemP256HkdfSha256HkdfSha256Aes128Gcm],
+      seal: async ({ recipientPublicKey, info, aad, plaintext }) => {
+        const publicKey = await p256HpkeSuite.DeserializePublicKey(recipientPublicKey.publicKey)
+        const { encapsulatedSecret, ciphertext } = await p256HpkeSuite.Seal(publicKey, plaintext, { info, aad })
+
+        return { enc: encapsulatedSecret, ciphertext }
+      },
+      open: async ({ recipientKey, enc, info, aad, ciphertext }) => {
+        const privateKey = await p256HpkeSuite.DeserializePrivateKey(recipientKey.privateKey)
+        return await p256HpkeSuite.Open(privateKey, enc, ciphertext, { info, aad })
+      },
     },
   },
 

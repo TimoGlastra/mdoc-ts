@@ -67,9 +67,14 @@ async function presentMdoc() {
   const deviceResponse = await Holder.createDeviceResponseForDeviceRequest(
     {
       deviceRequest,
-      issuerSigned: [credential],
       sessionTranscript,
-      signature: { signingKey: CoseKey.fromJwk(DEVICE_JWK_PRIVATE) },
+      documents: [
+        {
+          issuerSigned: credential,
+          docRequestIndex: 0,
+          signature: { signingKey: CoseKey.fromJwk(DEVICE_JWK_PRIVATE) },
+        },
+      ],
     },
     mdocContext
   )
