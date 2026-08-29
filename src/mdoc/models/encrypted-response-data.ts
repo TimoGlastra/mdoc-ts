@@ -15,7 +15,7 @@ export type EncryptedResponseDataOptions = {
    * uncompressed SEC1 point, not a COSE_Key.
    */
   enc: Uint8Array
-  cipherText: Uint8Array
+  ciphertext: Uint8Array
 }
 
 /**
@@ -35,14 +35,14 @@ export class EncryptedResponseData extends CborStructure<
     return this.structure.get('enc')
   }
 
-  public get cipherText() {
+  public get ciphertext() {
     return this.structure.get('cipherText')
   }
 
   public static create(options: EncryptedResponseDataOptions): EncryptedResponseData {
     const map: EncryptedResponseDataDecodedStructure = new TypedMap([
       ['enc', options.enc],
-      ['cipherText', options.cipherText],
+      ['cipherText', options.ciphertext],
     ])
 
     return this.fromDecodedStructure(map)

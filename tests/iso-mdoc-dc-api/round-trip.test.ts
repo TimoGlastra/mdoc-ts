@@ -187,11 +187,11 @@ describe('IsoMdocDcApi round trip', () => {
     )
 
     const encryptedResponse = EncryptedResponse.fromBase64Url(response)
-    const cipherText = new Uint8Array(encryptedResponse.cipherText)
-    cipherText[0] ^= 0xff
+    const ciphertext = new Uint8Array(encryptedResponse.ciphertext)
+    ciphertext[0] ^= 0xff
 
     const tampered = EncryptedResponse.create({
-      encryptedResponseData: EncryptedResponseData.create({ enc: encryptedResponse.enc, cipherText }),
+      encryptedResponseData: EncryptedResponseData.create({ enc: encryptedResponse.enc, ciphertext }),
     })
 
     await expect(

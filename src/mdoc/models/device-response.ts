@@ -341,6 +341,13 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
     return DeviceResponse.fromDecodedStructure(map)
   }
 
+  private static findDocRequest(deviceRequest: DeviceRequest, docRequestIndex: number): DocRequest {
+    const docRequest = deviceRequest.docRequests[docRequestIndex]
+    if (!docRequest) throw new Error(`No doc request found at index ${docRequestIndex}`)
+
+    return docRequest
+  }
+
   /**
    * Create a device response for a device request.
    *
@@ -360,7 +367,7 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
       options.documents.map((document) =>
         DeviceResponse.createDocument(
           {
-            docRequest: findDocRequest(options.deviceRequest, document.docRequestIndex),
+            docRequest: DeviceResponse.findDocRequest(options.deviceRequest, document.docRequestIndex),
             sessionTranscript: options.sessionTranscript,
             issuerSigned: document.issuerSigned,
             deviceNamespaces: document.deviceNamespaces,
@@ -391,11 +398,4 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
 
     return this.fromDecodedStructure(map)
   }
-}
-
-function findDocRequest(deviceRequest: DeviceRequest, docRequestIndex: number): DocRequest {
-  const docRequest = deviceRequest.docRequests[docRequestIndex]
-  if (!docRequest) throw new Error(`No doc request found at index ${docRequestIndex}`)
-
-  return docRequest
 }

@@ -66,10 +66,10 @@ describe('Annex C models', () => {
 
   test('EncryptedResponse round-trips through CBOR', () => {
     const enc = new Uint8Array(65).fill(4)
-    const cipherText = hex.decode('deadbeef')
+    const ciphertext = hex.decode('deadbeef')
 
     const encryptedResponse = EncryptedResponse.create({
-      encryptedResponseData: EncryptedResponseData.create({ enc, cipherText }),
+      encryptedResponseData: EncryptedResponseData.create({ enc, ciphertext }),
     })
 
     const raw = cborDecode<[string, Map<string, unknown>]>(encryptedResponse.encode())
@@ -77,7 +77,7 @@ describe('Annex C models', () => {
 
     const decoded = EncryptedResponse.fromBase64Url(base64url.encode(encryptedResponse.encode()))
     expect(decoded.enc).toStrictEqual(enc)
-    expect(decoded.cipherText).toStrictEqual(cipherText)
+    expect(decoded.ciphertext).toStrictEqual(ciphertext)
   })
 
   test('EncryptionInfo rejects a payload that is not tagged "dcapi"', () => {

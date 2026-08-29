@@ -39,8 +39,8 @@ export class EncryptedResponse extends CborStructure<
     return this.structure.enc
   }
 
-  public get cipherText() {
-    return this.structure.cipherText
+  public get ciphertext() {
+    return this.structure.ciphertext
   }
 
   public static create(options: EncryptedResponseOptions): EncryptedResponse {
