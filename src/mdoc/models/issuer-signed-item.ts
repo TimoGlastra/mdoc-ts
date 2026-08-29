@@ -1,4 +1,12 @@
-import { CborStructure, typedMap, zUint8Array } from '@owf/cose'
+import {
+  type AnyCborStructure,
+  CborStructure,
+  type CborStructureStaticThis,
+  cborEncode,
+  DataItem,
+  typedMap,
+  zUint8Array,
+} from '@owf/cose'
 import { compareBytes } from '@owf/identity-common'
 import { z } from 'zod'
 import type { MdocContext } from '../../context'
@@ -36,8 +44,14 @@ export class IssuerSignedItem extends CborStructure<
   IssuerSignedItemEncodedStructure,
   IssuerSignedItemDecodedStructure
 > {
+  #originalPayloadBytes?: Uint8Array
+
   public static override get encodingSchema() {
     return issuerSignedItemSchema
+  }
+
+  public get originalPayloadBytes() {
+    return this.#originalPayloadBytes
   }
 
   public get random() {
@@ -59,7 +73,9 @@ export class IssuerSignedItem extends CborStructure<
   public async isValid(namespace: Namespace, issuerAuth: IssuerAuth, ctx: Pick<MdocContext, 'crypto'>) {
     const digest = await ctx.crypto.digest({
       digestAlgorithm: issuerAuth.mobileSecurityObject.digestAlgorithm,
-      bytes: this.encode({ asDataItem: true }),
+      bytes: this.originalPayloadBytes
+        ? cborEncode(DataItem.fromBuffer(this.originalPayloadBytes))
+        : this.encode({ asDataItem: true }),
     })
 
     const valueDigests = issuerAuth.mobileSecurityObject.valueDigests.valueDigests
@@ -84,6 +100,14 @@ export class IssuerSignedItem extends CborStructure<
     }
 
     return false
+  }
+
+  public static fromDataItem<T extends AnyCborStructure>(this: CborStructureStaticThis<T>, dataItem: unknown): T {
+    const item = super.fromDataItem(dataItem) as T
+    if (item instanceof IssuerSignedItem && dataItem instanceof DataItem) {
+      item.#originalPayloadBytes = new Uint8Array(dataItem.buffer)
+    }
+    return item
   }
 
   public static fromOptions(options: IssuerSignedItemOptions) {
