@@ -7,8 +7,11 @@ import { hex } from '@owf/identity-common'
 import { hkdf } from '@panva/hkdf'
 import * as x509 from '@peculiar/x509'
 import { X509Certificate } from '@peculiar/x509'
+import { AEAD_AES_128_GCM, CipherSuite, KDF_HKDF_SHA256, KEM_DHKEM_P256_HKDF_SHA256 } from 'hpke'
 import { exportJWK, importX509 } from 'jose'
-import { CoseKey, type MdocContext } from '../src'
+import { CoseKey, HpkeSuiteId, type MdocContext } from '../src'
+
+const p256HpkeSuite = new CipherSuite(KEM_DHKEM_P256_HKDF_SHA256, KDF_HKDF_SHA256, AEAD_AES_128_GCM)
 
 export const mdocContext: MdocContext = {
   fetch,
@@ -26,6 +29,27 @@ export const mdocContext: MdocContext = {
       const ikm = p256.getSharedSecret(privateKey, publicKey, true).slice(1)
       const digestAlgorithm = da === 'SHA-384' ? 'sha384' : da === 'SHA-512' ? 'sha512' : 'sha256'
       return await hkdf(digestAlgorithm, ikm, salt, info, 32)
+    },
+    hpke: {
+      suites: [HpkeSuiteId.DhkemP256HkdfSha256HkdfSha256Aes128Gcm],
+      seal: async ({ recipientPublicKey, info, aad, plaintext }) => {
+        const publicKey = await p256HpkeSuite.DeserializePublicKey(recipientPublicKey.publicKey)
+        const { encapsulatedSecret, ciphertext } = await p256HpkeSuite.Seal(publicKey, plaintext, { info, aad })
+
+        return { enc: encapsulatedSecret, ciphertext }
+      },
+      open: async ({ recipientKey, enc, info, aad, ciphertext }) => {
+        // Decapsulation needs the recipient public key. Node only exposes `crypto.subtle.getPublicKey`
+        // from v24, so on older runtimes hpke falls back to re-exporting the private key — which fails
+        // for a non-extractable key. Passing a key pair works on every runtime and keeps the private
+        // key non-extractable.
+        const [privateKey, publicKey] = await Promise.all([
+          p256HpkeSuite.DeserializePrivateKey(recipientKey.privateKey),
+          p256HpkeSuite.DeserializePublicKey(recipientKey.publicKey),
+        ])
+
+        return await p256HpkeSuite.Open({ privateKey, publicKey }, enc, ciphertext, { info, aad })
+      },
     },
   },
 

@@ -11,6 +11,22 @@ export const DEVICE_JWK_PRIVATE = {
   d: 'eRpAZr3eV5xMMnPG3kWjg90Y-bBff9LqmlQuk49HUtA',
 }
 
+/**
+ * A second device key, for responses where every document brings its own device key.
+ */
+export const SECOND_DEVICE_JWK_PUBLIC = {
+  kty: 'EC',
+  x: 'm8RWqRq4quIapyDgbi7Qj2TSat3WrOC1SzNazGHXrxE',
+  y: 'F90yY1l3nUpZTaWvESsMaAH2PNfoTbvkVNSprI7YBwk',
+  crv: 'P-256',
+  alg: 'ES256',
+}
+
+export const SECOND_DEVICE_JWK_PRIVATE = {
+  ...SECOND_DEVICE_JWK_PUBLIC,
+  d: 'j6kPwMX6nU3h45-W_HRn5Tigb_H3ZR5QRvaOieYxXOc',
+}
+
 export const ISSUER_CERTIFICATE = `-----BEGIN CERTIFICATE-----
 MIICKjCCAdCgAwIBAgIUV8bM0wi95D7KN0TyqHE42ru4hOgwCgYIKoZIzj0EAwIw
 UzELMAkGA1UEBhMCVVMxETAPBgNVBAgMCE5ldyBZb3JrMQ8wDQYDVQQHDAZBbGJh

@@ -127,9 +127,14 @@ suite('Verification', () => {
     const deviceResponse = await Holder.createDeviceResponseForDeviceRequest(
       {
         deviceRequest,
-        issuerSigned: [credential],
         sessionTranscript: fakeSessionTranscript,
-        signature: { signingKey: CoseKey.fromJwk(DEVICE_JWK_PRIVATE) },
+        documents: [
+          {
+            issuerSigned: credential,
+            docRequestIndex: 0,
+            signature: { signingKey: CoseKey.fromJwk(DEVICE_JWK_PRIVATE) },
+          },
+        ],
       },
       mdocContext
     )
@@ -232,9 +237,14 @@ suite('Verification', () => {
     const deviceResponse = await Holder.createDeviceResponseForDeviceRequest(
       {
         deviceRequest,
-        issuerSigned: [credential],
         sessionTranscript: fakeSessionTranscript,
-        signature: { signingKey: CoseKey.fromJwk(DEVICE_JWK_PRIVATE) },
+        documents: [
+          {
+            issuerSigned: credential,
+            docRequestIndex: 0,
+            signature: { signingKey: CoseKey.fromJwk(DEVICE_JWK_PRIVATE) },
+          },
+        ],
       },
       mdocContext
     )
@@ -324,9 +334,14 @@ suite('Verification', () => {
     const deviceResponse = await Holder.createDeviceResponseForDeviceRequest(
       {
         deviceRequest,
-        issuerSigned: [credential],
         sessionTranscript: fakeSessionTranscript,
-        signature: { signingKey: CoseKey.fromJwk(DEVICE_JWK_PRIVATE) },
+        documents: [
+          {
+            issuerSigned: credential,
+            docRequestIndex: 0,
+            signature: { signingKey: CoseKey.fromJwk(DEVICE_JWK_PRIVATE) },
+          },
+        ],
       },
       mdocContext
     )
@@ -436,9 +451,14 @@ suite('Verification', () => {
     const deviceResponse = await Holder.createDeviceResponseForDeviceRequest(
       {
         deviceRequest,
-        issuerSigned: [credential],
         sessionTranscript: fakeSessionTranscript,
-        signature: { signingKey: CoseKey.fromJwk(DEVICE_JWK_PRIVATE) },
+        documents: [
+          {
+            issuerSigned: credential,
+            docRequestIndex: 0,
+            signature: { signingKey: CoseKey.fromJwk(DEVICE_JWK_PRIVATE) },
+          },
+        ],
       },
       mdocContext
     )
@@ -565,9 +585,14 @@ suite('Verification', () => {
     const deviceResponse = await Holder.createDeviceResponseForDeviceRequest(
       {
         deviceRequest,
-        issuerSigned: [credential],
         sessionTranscript: fakeSessionTranscript,
-        signature: { signingKey: CoseKey.fromJwk(DEVICE_JWK_PRIVATE) },
+        documents: [
+          {
+            issuerSigned: credential,
+            docRequestIndex: 0,
+            signature: { signingKey: CoseKey.fromJwk(DEVICE_JWK_PRIVATE) },
+          },
+        ],
       },
       mdocContext
     )
@@ -944,9 +969,14 @@ suite('Verification', () => {
       Holder.createDeviceResponseForDeviceRequest(
         {
           deviceRequest,
-          issuerSigned: [credential],
           sessionTranscript: fakeSessionTranscript,
-          signature: { signingKey: CoseKey.fromJwk(DEVICE_JWK_PRIVATE) },
+          documents: [
+            {
+              issuerSigned: credential,
+              docRequestIndex: 0,
+              signature: { signingKey: CoseKey.fromJwk(DEVICE_JWK_PRIVATE) },
+            },
+          ],
         },
         mdocContext
       )
@@ -1065,9 +1095,14 @@ suite('Verification', () => {
     const deviceResponse = await Holder.createDeviceResponseForDeviceRequest(
       {
         deviceRequest,
-        issuerSigned: [credential],
         sessionTranscript: fakeSessionTranscript,
-        signature: { signingKey: CoseKey.fromJwk(DEVICE_JWK_PRIVATE) },
+        documents: [
+          {
+            issuerSigned: credential,
+            docRequestIndex: 0,
+            signature: { signingKey: CoseKey.fromJwk(DEVICE_JWK_PRIVATE) },
+          },
+        ],
       },
       mdocContext
     )

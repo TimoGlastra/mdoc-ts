@@ -10,7 +10,6 @@ import {
 import { base64url, stringToBytes } from '@owf/identity-common'
 import { z } from 'zod'
 import type { MdocContext } from '../../context'
-import { findIssuerSigned } from '../../utils/findIssuerSigned'
 import { limitDisclosureToDeviceRequestNameSpaces } from '../../utils/limitDisclosure'
 import { verifyDocRequestsWithIssuerSigned } from '../../utils/verifyDocRequestsWithIssuerSigned'
 import { defaultVerificationCallback, type VerificationCallback } from '../check-callback'
@@ -22,6 +21,7 @@ import { DeviceNamespaces } from './device-namespaces'
 import type { DeviceRequest } from './device-request'
 import { DeviceSignature } from './device-signature'
 import { DeviceSigned } from './device-signed'
+import type { DocRequest } from './doc-request'
 import { Document, type DocumentEncodedStructure } from './document'
 import { DocumentError, type DocumentErrorStructure } from './document-error'
 import type { IssuerAuthVerificationResult } from './issuer-auth'
@@ -53,6 +53,26 @@ export type DeviceResponseOptions = {
 }
 
 export type DeviceResponseVerificationResult = Array<IssuerAuthVerificationResult & { document: Document }>
+
+/**
+ * A single document to disclose in a device response, authenticated with either a device signature
+ * or a device MAC.
+ */
+export type DeviceResponseDocumentOptions = {
+  issuerSigned: IssuerSigned
+  /**
+   * Index into `deviceRequest.docRequests` of the doc request this document answers.
+   */
+  docRequestIndex: number
+  deviceNamespaces?: DeviceNamespaces
+  signature?: {
+    signingKey: CoseKey
+  }
+  mac?: {
+    ephemeralKey: CoseKey
+    signingKey: CoseKey
+  }
+}
 
 export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure, DeviceResponseDecodedStructure> {
   public static override get encodingSchema() {
@@ -215,11 +235,15 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
     return DeviceResponse.decode(base64url.decode(encoded))
   }
 
-  private static async create(
+  /**
+   * Create a single disclosed `Document` for one `DocRequest`, authenticated with either a
+   * device signature or a device MAC.
+   */
+  private static async createDocument(
     options: {
-      deviceRequest: DeviceRequest
+      docRequest: DocRequest
       sessionTranscript: SessionTranscript | Uint8Array
-      issuerSigned: Array<IssuerSigned>
+      issuerSigned: IssuerSigned
       deviceNamespaces?: DeviceNamespaces
       signature?: {
         signingKey: CoseKey
@@ -238,79 +262,76 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
     const signingKey = useSignature ? options.signature?.signingKey : options.mac?.signingKey
     if (!signingKey) throw new Error('Signing key is missing')
 
-    const documents = await Promise.all(
-      options.deviceRequest.docRequests.map(async (docRequest) => {
-        const issuerSigned = findIssuerSigned(options.issuerSigned, docRequest.itemsRequest.docType)
-        const disclosedIssuerNamespace = limitDisclosureToDeviceRequestNameSpaces(issuerSigned, docRequest)
+    const { docRequest } = options
+    const docType = docRequest.itemsRequest.docType
+    const disclosedIssuerNamespace = limitDisclosureToDeviceRequestNameSpaces(options.issuerSigned, docRequest)
 
-        const docType = docRequest.itemsRequest.docType
+    const deviceNamespaces = options.deviceNamespaces ?? DeviceNamespaces.create({ deviceNamespaces: new Map() })
 
-        const deviceNamespaces = options.deviceNamespaces ?? DeviceNamespaces.create({ deviceNamespaces: new Map() })
+    const deviceAuthenticationBytes = DeviceAuthentication.create({
+      sessionTranscript: options.sessionTranscript,
+      docType,
+      deviceNamespaces,
+    }).encode({ asDataItem: true })
 
-        const deviceAuthenticationBytes = DeviceAuthentication.create({
-          sessionTranscript: options.sessionTranscript,
-          docType,
-          deviceNamespaces,
-        }).encode({ asDataItem: true })
+    const unprotectedHeaders = UnprotectedHeaders.create({})
+    if (signingKey.keyId) {
+      // COSE label 4 (kid) is a bstr per RFC 8152; UTF-8 encode
+      // the text form at the header boundary.
+      unprotectedHeaders.headers?.set(RegisteredCwtHeaderClaimKey.KeyId, stringToBytes(signingKey.keyId))
+    }
 
-        const unprotectedHeaders = UnprotectedHeaders.create({})
-        if (signingKey.keyId) {
-          // COSE label 4 (kid) is a bstr per RFC 8152; UTF-8 encode
-          // the text form at the header boundary.
-          unprotectedHeaders.headers?.set(RegisteredCwtHeaderClaimKey.KeyId, stringToBytes(signingKey.keyId))
-        }
+    const protectedHeaders = ProtectedHeaders.create({
+      protectedHeaders: new Map([[RegisteredCwtHeaderClaimKey.Algorithm, signingKey.algorithm]]),
+    })
 
-        const protectedHeaders = ProtectedHeaders.create({
-          protectedHeaders: new Map([[RegisteredCwtHeaderClaimKey.Algorithm, signingKey.algorithm]]),
-        })
+    const deviceAuthOptions: DeviceAuthOptions = {}
+    if (useSignature) {
+      const deviceSignature = await DeviceSignature.create({
+        unprotectedHeaders,
+        protectedHeaders,
+        payload: null,
+      }).sign({ signingKey, detachedPayload: deviceAuthenticationBytes }, { sign: ctx.cose.sign1.sign })
 
-        const deviceAuthOptions: DeviceAuthOptions = {}
-        if (useSignature) {
-          const deviceSignature = await DeviceSignature.create({
-            unprotectedHeaders,
-            protectedHeaders,
-            payload: null,
-          }).sign({ signingKey, detachedPayload: deviceAuthenticationBytes }, { sign: ctx.cose.sign1.sign })
+      deviceAuthOptions.deviceSignature = deviceSignature
+    } else {
+      const ephemeralKey = options.mac?.ephemeralKey
+      if (!ephemeralKey) throw new Error('Ephemeral key is missing')
 
-          deviceAuthOptions.deviceSignature = deviceSignature
-        } else {
-          const ephemeralKey = options.mac?.ephemeralKey
-          if (!ephemeralKey) throw new Error('Ephemeral key is missing')
-
-          const deviceMac = DeviceMac.create({
-            protectedHeaders,
-            unprotectedHeaders,
-            payload: null,
-          })
-
-          const macKey = await deviceMac.createDeviceMacKey(
-            {
-              publicKey: ephemeralKey,
-              privateKey: signingKey,
-              sessionTranscript: options.sessionTranscript,
-            },
-            ctx
-          )
-
-          await deviceMac.authenticate({ key: macKey, detachedPayload: deviceAuthenticationBytes }, ctx.cose.mac0)
-
-          deviceAuthOptions.deviceMac = deviceMac
-        }
-
-        return Document.create({
-          docType,
-          issuerSigned: IssuerSigned.create({
-            issuerNamespaces: disclosedIssuerNamespace,
-            issuerAuth: issuerSigned.issuerAuth,
-          }),
-          deviceSigned: DeviceSigned.create({
-            deviceNamespaces,
-            deviceAuth: DeviceAuth.create(deviceAuthOptions),
-          }),
-        })
+      const deviceMac = DeviceMac.create({
+        protectedHeaders,
+        unprotectedHeaders,
+        payload: null,
       })
-    )
 
+      const macKey = await deviceMac.createDeviceMacKey(
+        {
+          publicKey: ephemeralKey,
+          privateKey: signingKey,
+          sessionTranscript: options.sessionTranscript,
+        },
+        ctx
+      )
+
+      await deviceMac.authenticate({ key: macKey, detachedPayload: deviceAuthenticationBytes }, ctx.cose.mac0)
+
+      deviceAuthOptions.deviceMac = deviceMac
+    }
+
+    return Document.create({
+      docType,
+      issuerSigned: IssuerSigned.create({
+        issuerNamespaces: disclosedIssuerNamespace,
+        issuerAuth: options.issuerSigned.issuerAuth,
+      }),
+      deviceSigned: DeviceSigned.create({
+        deviceNamespaces,
+        deviceAuth: DeviceAuth.create(deviceAuthOptions),
+      }),
+    })
+  }
+
+  private static fromDocuments(documents: Array<Document>) {
     const map: DeviceResponseDecodedStructure = new TypedMap([
       ['version', '1.0'],
       ['status', 0],
@@ -320,23 +341,45 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
     return DeviceResponse.fromDecodedStructure(map)
   }
 
+  private static findDocRequest(deviceRequest: DeviceRequest, docRequestIndex: number): DocRequest {
+    const docRequest = deviceRequest.docRequests[docRequestIndex]
+    if (!docRequest) throw new Error(`No doc request found at index ${docRequestIndex}`)
+
+    return docRequest
+  }
+
+  /**
+   * Create a device response for a device request.
+   *
+   * Every document brings its own device key and, optionally, its own device namespaces, and names
+   * the doc request it answers through `docRequestIndex`, so a request may also be answered
+   * partially.
+   */
   public static async createWithDeviceRequest(
     options: {
       deviceRequest: DeviceRequest
       sessionTranscript: SessionTranscript | Uint8Array
-      issuerSigned: Array<IssuerSigned>
-      deviceNamespaces?: DeviceNamespaces
-      mac?: {
-        ephemeralKey: CoseKey
-        signingKey: CoseKey
-      }
-      signature?: {
-        signingKey: CoseKey
-      }
+      documents: Array<DeviceResponseDocumentOptions>
     },
     ctx: Pick<MdocContext, 'crypto' | 'cose'>
   ) {
-    return await DeviceResponse.create(options, ctx)
+    const documents = await Promise.all(
+      options.documents.map((document) =>
+        DeviceResponse.createDocument(
+          {
+            docRequest: DeviceResponse.findDocRequest(options.deviceRequest, document.docRequestIndex),
+            sessionTranscript: options.sessionTranscript,
+            issuerSigned: document.issuerSigned,
+            deviceNamespaces: document.deviceNamespaces,
+            signature: document.signature,
+            mac: document.mac,
+          },
+          ctx
+        )
+      )
+    )
+
+    return DeviceResponse.fromDocuments(documents)
   }
 
   public static createSimple(options: DeviceResponseOptions): DeviceResponse {

@@ -19,3 +19,18 @@ export class TrustedRevocationCertificatesMustContainAtleastOneCertificateError 
 export class UnableToExtractX5ChainFromIdentifierListError extends MdlError {}
 export class InvalidIdentifierListSignatureError extends MdlError {}
 export class IdentifierFoundInRevokedListError extends MdlError {}
+
+/**
+ * ISO/IEC TS 18013-7:2025 C.5 requires the mdoc to abort when the DC API did not provide an origin,
+ * as the session transcript — and thus the anti-relay binding — cannot be computed without it.
+ */
+export class MissingOriginError extends MdlError {}
+export class HpkeNotSupportedError extends MdlError {}
+
+/**
+ * The request or response payload handed over the DC API did not have the shape Annex C defines.
+ */
+export class InvalidDcApiRequestError extends MdlError {}
+export class InvalidDcApiResponseError extends MdlError {}
+export class InvalidEncryptionInfoError extends MdlError {}
+export class InvalidEncryptedResponseError extends MdlError {}

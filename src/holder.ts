@@ -1,10 +1,9 @@
-import type { CoseKey } from '@owf/cose'
 import { base64url } from '@owf/identity-common'
 import type { MdocContext } from './context'
 import {
-  type DeviceNamespaces,
   DeviceRequest,
   DeviceResponse,
+  type DeviceResponseDocumentOptions,
   IssuerSigned,
   type IssuerSignedVerificationResult,
   SessionTranscript,
@@ -92,15 +91,7 @@ export class Holder {
     options: {
       deviceRequest: DeviceRequest
       sessionTranscript: SessionTranscript | Uint8Array
-      issuerSigned: Array<IssuerSigned>
-      deviceNamespaces?: DeviceNamespaces
-      mac?: {
-        ephemeralKey: CoseKey
-        signingKey: CoseKey
-      }
-      signature?: {
-        signingKey: CoseKey
-      }
+      documents: Array<DeviceResponseDocumentOptions>
     },
     context: Pick<MdocContext, 'cose' | 'crypto'>
   ) {
