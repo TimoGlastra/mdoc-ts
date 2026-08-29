@@ -39,8 +39,16 @@ export const mdocContext: MdocContext = {
         return { enc: encapsulatedSecret, ciphertext }
       },
       open: async ({ recipientKey, enc, info, aad, ciphertext }) => {
-        const privateKey = await p256HpkeSuite.DeserializePrivateKey(recipientKey.privateKey)
-        return await p256HpkeSuite.Open(privateKey, enc, ciphertext, { info, aad })
+        // Decapsulation needs the recipient public key. Node only exposes `crypto.subtle.getPublicKey`
+        // from v24, so on older runtimes hpke falls back to re-exporting the private key — which fails
+        // for a non-extractable key. Passing a key pair works on every runtime and keeps the private
+        // key non-extractable.
+        const [privateKey, publicKey] = await Promise.all([
+          p256HpkeSuite.DeserializePrivateKey(recipientKey.privateKey),
+          p256HpkeSuite.DeserializePublicKey(recipientKey.publicKey),
+        ])
+
+        return await p256HpkeSuite.Open({ privateKey, publicKey }, enc, ciphertext, { info, aad })
       },
     },
   },
