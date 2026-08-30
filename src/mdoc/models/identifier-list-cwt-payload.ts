@@ -11,29 +11,12 @@ export enum IdentifierListCwtClaimKey {
   IdentifierList = 65530,
 }
 
-/**
- * Generic CWT registered claim keys not yet exposed by `@owf/cose`'s
- * `RegisteredCwtClaimKey`. Inline pending an upstream addition.
- */
-export enum CwtClaimKey {
-  /** `typ` claim, RFC 9596 § 4.1. */
-  Typ = 16,
-}
-
-/** CWT content type strings used by ISO 18013-5 revocation lists. */
-export enum MediaTypes {
-  IdentifierListCwt = 'application/identifierlist+cwt',
-}
-
 const identifierListCwtPayloadSchema = typedMap(
   [
     [RegisteredCwtClaimKey.Subject, z.string().exactOptional()],
     [RegisteredCwtClaimKey.IssuedAt, z.number().exactOptional()],
     // ISO 18013-5 § 12.3.6.3: "The exp claim shall be present."
     [RegisteredCwtClaimKey.ExpirationTime, z.number()],
-    // § 12.3.6.4: "The value of the type claim shall be
-    // 'application/identifierlist+cwt'".
-    [CwtClaimKey.Typ, z.literal(MediaTypes.IdentifierListCwt)],
     [IdentifierListCwtClaimKey.IdentifierList, z.instanceof(IdentifierList)],
   ],
   { allowAdditionalKeys: true }
@@ -83,7 +66,6 @@ export class IdentifierListCwtPayload extends CborStructure<
     }
     const map: IdentifierListCwtPayloadDecodedStructure = new TypedMap([
       [RegisteredCwtClaimKey.ExpirationTime, Math.floor(options.expirationTime.getTime() / 1000)],
-      [CwtClaimKey.Typ, MediaTypes.IdentifierListCwt],
       [IdentifierListCwtClaimKey.IdentifierList, options.identifierList],
     ])
     if (options.subject !== undefined) {
