@@ -27,7 +27,6 @@ export {
   describeUnauthorizedDeviceSignedElements,
   findUnauthorizedDeviceSignedElements,
 } from './utils/keyAuthorizations'
-export { limitDisclosureToDeviceRequestNameSpaces } from './utils/limitDisclosure'
 export {
   type ClaimMatch,
   type ClaimMatchFailure,
@@ -58,12 +57,14 @@ export {
   type DocumentMatchFailure,
   type DocumentMatchSuccess,
   type ElementMatchOptions,
+  type HolderCredential,
   type HolderDeviceRequestMatchFailure,
   type HolderDeviceRequestMatchResult,
   type HolderDeviceRequestMatchSuccess,
   type HolderDocRequestMatch,
   type HolderDocRequestMatchFailure,
   type HolderDocRequestMatchSuccess,
+  type InvalidDocRequest,
   matchCredentialsToDeviceRequest,
   matchDeviceRequest,
   reportDeviceRequestMatch,

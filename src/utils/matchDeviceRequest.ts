@@ -7,15 +7,14 @@ import type { DeviceRequest } from '../mdoc/models/device-request'
 import type { DeviceResponse } from '../mdoc/models/device-response'
 import type { DocType } from '../mdoc/models/doctype'
 import type { IntentToRetain } from '../mdoc/models/intent-to-retain'
-import type { IssuerSigned } from '../mdoc/models/issuer-signed'
+import { IssuerSigned } from '../mdoc/models/issuer-signed'
 import type { IssuerSignedItem } from '../mdoc/models/issuer-signed-item'
 import type { KeyAuthorizations } from '../mdoc/models/key-authorizations'
 import type { Namespace } from '../mdoc/models/namespace'
-import { findAgeOverCandidate } from './ageOver'
+import { describeAgeOverLimitViolations, findAgeOverCandidate, findAgeOverRequestLimitViolations } from './ageOver'
+import { getOwnProperty } from './getOwnProperty'
+import { isDeviceSignedElementAuthorized } from './keyAuthorizations'
 
-/**
- * Whether an element comes from the issuer-signed or the device-signed part of a document.
- */
 export type DisclosedElementSource = 'issuerSigned' | 'deviceSigned'
 
 export type DisclosedElement = {
@@ -48,9 +47,6 @@ export type ElementMatchOptions = {
   source?: DisclosedElementSource | 'any'
 }
 
-/**
- * Match options for a single doc request.
- */
 export type DocRequestMatchOptions = {
   /**
    * Index into `deviceRequest.docRequests` of the doc request these options apply to.
@@ -72,11 +68,13 @@ export type DocRequestMatchOptions = {
   elements?: Record<Namespace, Record<DataElementIdentifier, ElementMatchOptions>>
 }
 
+/**
+ * Per doc request the elements that are optional or that may be answered from `deviceSigned`. By
+ * default every requested element is required and must be issuer-signed.
+ */
 export type DeviceRequestMatchOptions = {
   /**
-   * Match options per doc request, each referring to its doc request by `docRequestIndex`. A doc
-   * request can have options at most once, and a doc request without options is matched with the
-   * defaults: every element without options is required and must be issuer-signed.
+   * A doc request can have options at most once.
    */
   docRequests?: Array<DocRequestMatchOptions>
 }
@@ -103,10 +101,6 @@ export type ClaimMatchSuccess = ClaimMatchBase & {
    * `age_over_NN` request is answered with a different age attestation (18013-5 7.2.5).
    */
   disclosedElementIdentifier: DataElementIdentifier
-  /**
-   * The value of the element. When matching the credentials of a holder this is `undefined` for a
-   * device-signed element, as its value is only provided when creating the response.
-   */
   elementValue: DataElementValue
   source: DisclosedElementSource
 }
@@ -115,15 +109,21 @@ export type ClaimMatchFailure = ClaimMatchBase & {
   success: false
   /**
    * `'notDisclosed'` — the document did not disclose the element, or the credential cannot: the
-   * issuer did not sign it, and the device key is not authorized for it.
+   * issuer did not sign it, and either the device key is not authorized for it or no value was
+   * provided for it in the device namespaces.
    *
    * `'disallowedSource'` — the document did disclose it, but only from a source the match options
    * do not allow for this element. By default only `issuerSigned` is allowed, so a `deviceSigned`
    * element the verifier did not mark as device-signed fails here rather than counting as a match.
+   *
+   * `'deviceKeyNotAuthorized'` — the document did disclose it device-signed, from a source the match
+   * options allow, but the device key is not authorized for it in the key authorizations of the MSO
+   * (18013-5 9.1.3.4).
    */
-  failure: 'notDisclosed' | 'disallowedSource'
+  failure: 'notDisclosed' | 'disallowedSource' | 'deviceKeyNotAuthorized'
   /**
-   * The source the element was disclosed from, when `failure` is `'disallowedSource'`.
+   * The source the element was disclosed from, when `failure` is `'disallowedSource'` or
+   * `'deviceKeyNotAuthorized'`.
    */
   disclosedFrom?: DisclosedElementSource
   reason: string
@@ -133,17 +133,11 @@ export type ClaimMatch = ClaimMatchSuccess | ClaimMatchFailure
 
 type NonEmptyArray<T> = [T, ...Array<T>]
 
-/**
- * The document or credential has the docType the doc request asks for.
- */
 export type DocTypeMatchSuccess = {
   success: true
   docType: DocType
 }
 
-/**
- * The document or credential does not have the docType the doc request asks for.
- */
 export type DocTypeMatchFailure = {
   success: false
   /**
@@ -188,9 +182,6 @@ export type ClaimsMatchFailure = {
   failedClaims: NonEmptyArray<ClaimMatchFailure>
 }
 
-/**
- * Whether a document or credential discloses the requested elements.
- */
 export type ClaimsMatchResult = ClaimsMatchSuccess | ClaimsMatchFailure
 
 type UnrequestedClaims = {
@@ -212,18 +203,12 @@ type DocumentMatchBase = {
   documentIndex: number
 }
 
-/**
- * A document that satisfies the doc request: every check passed.
- */
 export type DocumentMatchSuccess = DocumentMatchBase & {
   success: true
   docType: DocTypeMatchSuccess
   claims: DocumentClaimsMatchSuccess
 }
 
-/**
- * A document that does not satisfy the doc request: at least one check failed.
- */
 export type DocumentMatchFailure = DocumentMatchBase & {
   success: false
   docType: DocTypeMatchResult
@@ -250,9 +235,6 @@ type DocRequestMatchBase = {
   failedDocuments: Array<DocumentMatchFailure>
 }
 
-/**
- * At least one document in the response satisfies the doc request.
- */
 export type DocRequestMatchSuccess = DocRequestMatchBase & {
   success: true
   /**
@@ -261,9 +243,6 @@ export type DocRequestMatchSuccess = DocRequestMatchBase & {
   validDocuments: NonEmptyArray<DocumentMatchSuccess>
 }
 
-/**
- * No document in the response satisfies the doc request.
- */
 export type DocRequestMatchFailure = DocRequestMatchBase & {
   success: false
   validDocuments: []
@@ -278,9 +257,6 @@ type DeviceRequestMatchBase = {
   unrequestedDocuments: Array<{ documentIndex: number; docType: DocType }>
 }
 
-/**
- * The device response satisfies every doc request in the device request.
- */
 export type DeviceRequestMatchSuccess = DeviceRequestMatchBase & {
   success: true
   /**
@@ -289,9 +265,6 @@ export type DeviceRequestMatchSuccess = DeviceRequestMatchBase & {
   docRequests: Array<DocRequestMatchSuccess>
 }
 
-/**
- * The device response does not satisfy at least one doc request in the device request.
- */
 export type DeviceRequestMatchFailure = DeviceRequestMatchBase & {
   success: false
   /**
@@ -309,18 +282,12 @@ type CredentialMatchBase = {
   credentialIndex: number
 }
 
-/**
- * A credential that can satisfy the doc request: every check passed.
- */
 export type CredentialMatchSuccess = CredentialMatchBase & {
   success: true
   docType: DocTypeMatchSuccess
   claims: ClaimsMatchSuccess
 }
 
-/**
- * A credential that cannot satisfy the doc request: at least one check failed.
- */
 export type CredentialMatchFailure = CredentialMatchBase & {
   success: false
   docType: DocTypeMatchResult
@@ -341,14 +308,12 @@ type HolderDocRequestMatchBase = {
   docType: DocType
   /**
    * The credentials that do not satisfy this doc request, in the order they were provided. This
-   * includes every credential of another docType, for which the `docType` check failed.
+   * includes every credential of another docType, for which the `docType` check failed. Empty when
+   * the doc request is invalid, as credentials are then not matched.
    */
   failedCredentials: Array<CredentialMatchFailure>
 }
 
-/**
- * At least one credential can satisfy the doc request.
- */
 export type HolderDocRequestMatchSuccess = HolderDocRequestMatchBase & {
   success: true
   /**
@@ -358,18 +323,29 @@ export type HolderDocRequestMatchSuccess = HolderDocRequestMatchBase & {
 }
 
 /**
- * No credential can satisfy the doc request.
+ * Why a doc request cannot be answered by any credential.
+ *
+ * `'ageOverLimitExceeded'` — the doc request asks for more than two `age_over_NN` elements in a
+ * namespace, which 18013-5 7.2.5 forbids a reader to do, as together they narrow down the age of
+ * the holder.
  */
+export type InvalidDocRequest = {
+  failure: 'ageOverLimitExceeded'
+  reason: string
+}
+
 export type HolderDocRequestMatchFailure = HolderDocRequestMatchBase & {
   success: false
   validCredentials: []
+  /**
+   * Set when the doc request itself is invalid. No credential is then matched against it, so
+   * `failedCredentials` is empty.
+   */
+  invalidDocRequest?: InvalidDocRequest
 }
 
 export type HolderDocRequestMatch = HolderDocRequestMatchSuccess | HolderDocRequestMatchFailure
 
-/**
- * The credentials can satisfy every doc request in the device request.
- */
 export type HolderDeviceRequestMatchSuccess = {
   success: true
   /**
@@ -378,9 +354,6 @@ export type HolderDeviceRequestMatchSuccess = {
   docRequests: Array<HolderDocRequestMatchSuccess>
 }
 
-/**
- * The credentials cannot satisfy at least one doc request in the device request.
- */
 export type HolderDeviceRequestMatchFailure = {
   success: false
   /**
@@ -390,6 +363,19 @@ export type HolderDeviceRequestMatchFailure = {
 }
 
 export type HolderDeviceRequestMatchResult = HolderDeviceRequestMatchSuccess | HolderDeviceRequestMatchFailure
+
+/**
+ * A credential of the holder, with the values the holder can disclose device-signed for it.
+ */
+export type HolderCredential = {
+  issuerSigned: IssuerSigned
+  /**
+   * The values the holder can disclose device-signed with this credential. A requested element the
+   * issuer did not sign only matches when its value is here and the device key is authorized for
+   * it, the same as when creating the response.
+   */
+  deviceNamespaces?: DeviceNamespaces
+}
 
 /**
  * Match a `DeviceResponse` against the `DeviceRequest` it answers (verifier side).
@@ -402,7 +388,8 @@ export type HolderDeviceRequestMatchResult = HolderDeviceRequestMatchSuccess | H
  * are asserted by the mdoc itself rather than by the issuer. Pass `matchOptions` to mark elements
  * that are optional or that are expected to be device-signed.
  *
- * Uses the same rules as {@link matchCredentialsToDeviceRequest}.
+ * Shares its matching with {@link matchCredentialsToDeviceRequest}, which matches like a verifier
+ * that accepts every element from `'any'` source.
  *
  * This is purely a structural comparison — it does not verify issuer auth, device auth or the
  * digests of the disclosed elements. Use it alongside `DeviceResponse.verify`, which runs it as
@@ -416,14 +403,18 @@ export const matchDeviceRequest = (options: {
   const { deviceRequest, deviceResponse, matchOptions } = options
   const docRequestOptions = indexDocRequestOptions(deviceRequest, matchOptions)
 
-  const documents = deviceResponse.documents ?? []
+  // Every access to the mobile security object decodes it, so decode it once per document.
+  const documents = (deviceResponse.documents ?? []).map((document) => ({
+    document,
+    mobileSecurityObject: document.issuerSigned.issuerAuth.mobileSecurityObject,
+  }))
 
   const docRequests = deviceRequest.docRequests.map((docRequest, docRequestIndex): DocRequestMatch => {
     const { docType, namespaces } = docRequest.itemsRequest
     const elements = docRequestOptions.get(docRequestIndex)?.elements
 
-    const documentMatches = documents.map((document, documentIndex): DocumentMatch => {
-      const mobileSecurityObjectDocType = document.issuerSigned.issuerAuth.mobileSecurityObject.docType
+    const documentMatches = documents.map(({ document, mobileSecurityObject }, documentIndex): DocumentMatch => {
+      const mobileSecurityObjectDocType = mobileSecurityObject.docType
       const docTypeResult: DocTypeMatchResult =
         document.docType !== docType
           ? {
@@ -444,6 +435,7 @@ export const matchDeviceRequest = (options: {
         namespaces,
         elements,
         issuerSigned: document.issuerSigned,
+        keyAuthorizations: mobileSecurityObject.deviceKeyInfo.keyAuthorizations,
         deviceNamespaces: document.deviceSigned.deviceNamespaces,
       })
       const claimsResult: DocumentClaimsMatchResult = {
@@ -465,7 +457,7 @@ export const matchDeviceRequest = (options: {
   })
 
   const requestedDocTypes = new Set(deviceRequest.docRequests.map((docRequest) => docRequest.itemsRequest.docType))
-  const unrequestedDocuments = documents.flatMap((document, documentIndex) =>
+  const unrequestedDocuments = documents.flatMap(({ document }, documentIndex) =>
     requestedDocTypes.has(document.docType) ? [] : [{ documentIndex, docType: document.docType }]
   )
 
@@ -485,38 +477,79 @@ export const matchDeviceRequest = (options: {
  *
  * A requested element is disclosed issuer-signed when the issuer signed it (or, for an
  * `age_over_NN` request, the age attestation 18013-5 7.2.5 allows in its place). Otherwise it is
- * disclosed device-signed when the device key is authorized for it in the key authorizations of the
- * MSO, and its value has to be provided in the device namespaces when creating the response.
+ * disclosed device-signed when the credential comes with a value for exactly that element in its
+ * `deviceNamespaces`, and the device key is authorized for it in the key authorizations of the MSO.
  *
- * Uses the same rules as {@link matchDeviceRequest}. The request does not say which elements are
- * optional, so every requested element is required.
+ * `DeviceResponse.createWithDeviceRequest` selects the elements to disclose the same way, so a
+ * credential that matches can answer the doc request with the same `deviceNamespaces`. The request
+ * does not say which elements are optional, so every requested element is required.
+ *
+ * A doc request that asks for more than two `age_over_NN` elements in a namespace (18013-5 7.2.5)
+ * is not matched against any credential, and fails with `invalidDocRequest`.
+ *
+ * Shares its matching with {@link matchDeviceRequest}: a credential matches like a verifier that
+ * accepts every element from `'any'` source would match the response. A verifier only accepts
+ * issuer-signed elements by default, so a device-signed element only satisfies it when its match
+ * options allow `deviceSigned` for it.
  */
 export const matchCredentialsToDeviceRequest = (options: {
   deviceRequest: DeviceRequest
-  credentials: Array<IssuerSigned>
+  credentials: Array<IssuerSigned | HolderCredential>
 }): HolderDeviceRequestMatchResult => {
-  const { deviceRequest, credentials } = options
+  const { deviceRequest } = options
+  const credentials = options.credentials.map((credential) => {
+    const { issuerSigned, deviceNamespaces }: HolderCredential =
+      credential instanceof IssuerSigned ? { issuerSigned: credential } : credential
+
+    // Every access to the mobile security object decodes it, so decode it once per credential.
+    return { issuerSigned, deviceNamespaces, mobileSecurityObject: issuerSigned.issuerAuth.mobileSecurityObject }
+  })
 
   const docRequests = deviceRequest.docRequests.map((docRequest, docRequestIndex): HolderDocRequestMatch => {
     const { docType, namespaces } = docRequest.itemsRequest
 
-    const credentialMatches = credentials.map((issuerSigned, credentialIndex): CredentialMatch => {
-      const credentialDocType = issuerSigned.issuerAuth.mobileSecurityObject.docType
-      const docTypeResult: DocTypeMatchResult =
-        credentialDocType === docType
-          ? { success: true, docType }
-          : {
-              success: false,
-              docType: credentialDocType,
-              reason: `Credential has docType '${credentialDocType}', but docType '${docType}' was requested`,
-            }
+    const ageOverLimitViolations = findAgeOverRequestLimitViolations(namespaces)
+    if (ageOverLimitViolations.length > 0) {
+      return {
+        docRequestIndex,
+        docType,
+        success: false,
+        validCredentials: [],
+        failedCredentials: [],
+        invalidDocRequest: {
+          failure: 'ageOverLimitExceeded',
+          reason: `Doc request ${docRequestIndex} requests ${describeAgeOverLimitViolations(ageOverLimitViolations)}, but at most two age_over_NN elements may be requested per namespace`,
+        },
+      }
+    }
 
-      const claimsResult = toClaimsMatchResult(matchElements({ mode: 'holder', namespaces, issuerSigned }).claims)
+    const credentialMatches = credentials.map(
+      ({ issuerSigned, deviceNamespaces, mobileSecurityObject }, credentialIndex): CredentialMatch => {
+        const credentialDocType = mobileSecurityObject.docType
+        const docTypeResult: DocTypeMatchResult =
+          credentialDocType === docType
+            ? { success: true, docType }
+            : {
+                success: false,
+                docType: credentialDocType,
+                reason: `Credential has docType '${credentialDocType}', but docType '${docType}' was requested`,
+              }
 
-      return docTypeResult.success && claimsResult.success
-        ? { credentialIndex, success: true, docType: docTypeResult, claims: claimsResult }
-        : { credentialIndex, success: false, docType: docTypeResult, claims: claimsResult }
-    })
+        const claimsResult = toClaimsMatchResult(
+          matchElements({
+            mode: 'holder',
+            namespaces,
+            issuerSigned,
+            keyAuthorizations: mobileSecurityObject.deviceKeyInfo.keyAuthorizations,
+            deviceNamespaces,
+          }).claims
+        )
+
+        return docTypeResult.success && claimsResult.success
+          ? { credentialIndex, success: true, docType: docTypeResult, claims: claimsResult }
+          : { credentialIndex, success: false, docType: docTypeResult, claims: claimsResult }
+      }
+    )
 
     const validCredentials = credentialMatches.filter((credentialMatch) => credentialMatch.success)
     const failedCredentials = credentialMatches.filter((credentialMatch) => !credentialMatch.success)
@@ -541,24 +574,26 @@ type ElementCandidate = DisclosedElement & {
 /**
  * @internal
  */
-export type ElementMatch = {
-  claim: ClaimMatch
-  /**
-   * The element that answers the claim. Absent when the claim failed, or when the value of a
-   * device-signed element was not provided to a holder match.
-   */
-  element?: ElementCandidate
-}
+export type ElementMatch =
+  | {
+      claim: ClaimMatchSuccess
+      element: ElementCandidate
+    }
+  | { claim: ClaimMatchFailure; element?: undefined }
 
 /**
  * Match the requested elements of a single doc request against a single document or credential.
- * Shared by the verifier and the holder side, so both apply the same rules.
+ * Shared by the verifier and the holder side.
  *
  * - `verifier` matches the elements a document disclosed, from the source the `elements` options
  *   allow (by default `issuerSigned`).
  * - `holder` matches the elements a credential can disclose: issuer-signed when the issuer signed
- *   it, and otherwise device-signed when the device key is authorized for it. Values for
- *   device-signed elements are taken from `deviceNamespaces` when provided.
+ *   it, and otherwise device-signed when `deviceNamespaces` has a value for exactly that element.
+ *   Device-signed values are provided by the holder itself, so an `age_over_NN` request is not
+ *   answered with a device-signed value for another age.
+ *
+ * Either way a device-signed element only answers a request when the device key is authorized for
+ * it (18013-5 9.1.3.4).
  *
  * @internal
  */
@@ -567,18 +602,16 @@ export const matchElements = (options: {
   namespaces: Map<Namespace, Map<DataElementIdentifier, IntentToRetain>>
   elements?: Record<Namespace, Record<DataElementIdentifier, ElementMatchOptions>>
   issuerSigned: IssuerSigned
+  /**
+   * The key authorizations in the mobile security object of `issuerSigned`, passed in so that the
+   * caller decodes the mobile security object only once.
+   */
+  keyAuthorizations: KeyAuthorizations | undefined
   deviceNamespaces?: DeviceNamespaces
 }): { claims: Array<ElementMatch>; unusedElements: Array<DisclosedElement> } => {
-  const { mode, namespaces } = options
-  const keyAuthorizations = options.issuerSigned.issuerAuth.mobileSecurityObject.deviceKeyInfo.keyAuthorizations
+  const { mode, namespaces, keyAuthorizations } = options
 
   const available = collectElements(options.issuerSigned, options.deviceNamespaces)
-  // 18013-5 9.1.3.4: device-signed elements only count when the device key is authorized for them.
-  const candidates = available.filter(
-    (element) =>
-      element.source === 'issuerSigned' ||
-      isDeviceSignedElementAuthorized(keyAuthorizations, element.namespace, element.elementIdentifier)
-  )
 
   const claims: Array<ElementMatch> = []
   const usedElements = new Set<DisclosedElement>()
@@ -597,75 +630,73 @@ export const matchElements = (options: {
     })
   }
 
+  const failure = (
+    claim: ClaimMatchBase,
+    failure: Pick<ClaimMatchFailure, 'failure' | 'disclosedFrom' | 'reason'>,
+    // The elements the document disclosed for the claim, so they are not also reported as unrequested.
+    ...disclosed: Array<ElementCandidate | undefined>
+  ) => {
+    for (const element of disclosed) if (element) usedElements.add(element)
+    claims.push({ claim: { ...claim, success: false, ...failure } })
+  }
+
   for (const [namespace, requestedElements] of namespaces) {
-    const issuerSignedInNamespace = candidates.filter(
+    const issuerSignedInNamespace = available.filter(
       (element) => element.namespace === namespace && element.source === 'issuerSigned'
     )
-    const deviceSignedInNamespace = candidates.filter(
+    const deviceSignedInNamespace = available.filter(
       (element) => element.namespace === namespace && element.source === 'deviceSigned'
     )
+    // 18013-5 9.1.3.4: device-signed elements only answer a request when the device key is
+    // authorized for them.
+    const authorizedDeviceSignedInNamespace = deviceSignedInNamespace.filter((element) =>
+      isDeviceSignedElementAuthorized(keyAuthorizations, element)
+    )
+    const namespaceOptions = getOwnProperty(options.elements, namespace)
 
     for (const [elementIdentifier, intentToRetain] of requestedElements) {
       if (mode === 'holder') {
         const claim = { namespace, elementIdentifier, intentToRetain, optional: false }
 
-        const issuerSignedElement = findElement(elementIdentifier, issuerSignedInNamespace)
-        if (issuerSignedElement) {
-          success(claim, issuerSignedElement)
+        const element =
+          findElement(elementIdentifier, issuerSignedInNamespace) ??
+          authorizedDeviceSignedInNamespace.find((candidate) => candidate.elementIdentifier === elementIdentifier)
+        if (element) {
+          success(claim, element)
           continue
         }
 
-        if (isDeviceSignedElementAuthorized(keyAuthorizations, namespace, elementIdentifier)) {
-          const deviceSignedElement = deviceSignedInNamespace.find(
-            (element) => element.elementIdentifier === elementIdentifier
-          )
-          if (deviceSignedElement) {
-            success(claim, deviceSignedElement)
-            continue
-          }
-
-          claims.push({
-            claim: {
-              ...claim,
-              success: true,
-              disclosedElementIdentifier: elementIdentifier,
-              elementValue: undefined,
-              source: 'deviceSigned',
-            },
-          })
-          continue
-        }
-
-        claims.push({
-          claim: {
-            ...claim,
-            success: false,
-            failure: 'notDisclosed',
-            reason: `Element '${elementIdentifier}' in namespace '${namespace}' is not issuer-signed in the credential, and the device key is not authorized to sign it`,
-          },
+        failure(claim, {
+          failure: 'notDisclosed',
+          reason: isDeviceSignedElementAuthorized(keyAuthorizations, { namespace, elementIdentifier })
+            ? `Element '${elementIdentifier}' in namespace '${namespace}' is not issuer-signed in the credential, so it has to be disclosed device-signed, but no value was provided for it in the device namespaces`
+            : `Element '${elementIdentifier}' in namespace '${namespace}' is not issuer-signed in the credential, and the device key is not authorized to sign it`,
         })
         continue
       }
 
       const { optional = false, source = 'issuerSigned' } =
-        options.elements?.[namespace]?.[elementIdentifier] ?? options.elements?.[namespace]?.['*'] ?? {}
+        getOwnProperty(namespaceOptions, elementIdentifier) ?? getOwnProperty(namespaceOptions, '*') ?? {}
       const claim = { namespace, elementIdentifier, intentToRetain, optional }
 
       // The source is applied before the element is picked, so that an `age_over_NN` request is not
       // answered by a device-signed attestation while an issuer-signed one is also present.
       const element =
         source === 'deviceSigned'
-          ? findElement(elementIdentifier, deviceSignedInNamespace)
+          ? findElement(elementIdentifier, authorizedDeviceSignedInNamespace)
           : (findElement(elementIdentifier, issuerSignedInNamespace) ??
-            (source === 'any' ? findElement(elementIdentifier, deviceSignedInNamespace) : undefined))
+            (source === 'any' ? findElement(elementIdentifier, authorizedDeviceSignedInNamespace) : undefined))
 
       if (element) {
         success(claim, element)
         continue
       }
 
-      // The element may still be there, just not from a source this verifier accepts for it —
-      // report that rather than letting it pass or reporting it as absent.
+      // The element may still be there, just not in a way this verifier accepts for it — report
+      // that rather than letting it pass or reporting it as absent. Both are marked as used, as the
+      // doc request did ask for the element.
+      //
+      // Disclosed from a source that is not allowed:
       const disallowed =
         source === 'any'
           ? undefined
@@ -673,28 +704,43 @@ export const matchElements = (options: {
               elementIdentifier,
               source === 'issuerSigned' ? deviceSignedInNamespace : issuerSignedInNamespace
             )
+      // Disclosed device-signed from an allowed source, but every authorized element was already
+      // tried above:
+      const unauthorized =
+        source === 'issuerSigned' ? undefined : findElement(elementIdentifier, deviceSignedInNamespace)
+
+      // The unauthorized element is the one disclosed from the allowed source, so it is the failure
+      // to report when both are there.
+      if (unauthorized) {
+        failure(
+          claim,
+          {
+            failure: 'deviceKeyNotAuthorized',
+            disclosedFrom: 'deviceSigned',
+            reason: `Element '${unauthorized.elementIdentifier}' in namespace '${namespace}' was disclosed through deviceSigned, but the device key is not authorized for it in the mobile security object`,
+          },
+          unauthorized,
+          disallowed
+        )
+        continue
+      }
 
       if (disallowed) {
-        usedElements.add(disallowed)
-        claims.push({
-          claim: {
-            ...claim,
-            success: false,
+        failure(
+          claim,
+          {
             failure: 'disallowedSource',
             disclosedFrom: disallowed.source,
             reason: `Element '${disallowed.elementIdentifier}' in namespace '${namespace}' was disclosed through ${disallowed.source}, but must be disclosed through ${source}`,
           },
-        })
+          disallowed
+        )
         continue
       }
 
-      claims.push({
-        claim: {
-          ...claim,
-          success: false,
-          failure: 'notDisclosed',
-          reason: `Element '${elementIdentifier}' in namespace '${namespace}' was not disclosed`,
-        },
+      failure(claim, {
+        failure: 'notDisclosed',
+        reason: `Element '${elementIdentifier}' in namespace '${namespace}' was not disclosed`,
       })
     }
   }
@@ -750,6 +796,19 @@ const indexDocRequestOptions = (deviceRequest: DeviceRequest, matchOptions?: Dev
   return docRequestOptions
 }
 
+/**
+ * Throw an `InvalidDeviceRequestMatchOptionsError` when the match options do not fit the device
+ * request, so that verification can fail on them before it does any work.
+ *
+ * @internal
+ */
+export const validateDeviceRequestMatchOptions = (
+  deviceRequest: DeviceRequest,
+  matchOptions?: DeviceRequestMatchOptions
+) => {
+  indexDocRequestOptions(deviceRequest, matchOptions)
+}
+
 const isNonEmptyArray = <T>(array: Array<T>): array is NonEmptyArray<T> => array.length > 0
 
 /**
@@ -764,15 +823,6 @@ export const findElement = <Candidate extends { elementIdentifier: DataElementId
 ) =>
   candidates.find((candidate) => candidate.elementIdentifier === elementIdentifier) ??
   findAgeOverCandidate(elementIdentifier, candidates)
-
-const isDeviceSignedElementAuthorized = (
-  keyAuthorizations: KeyAuthorizations | undefined,
-  namespace: Namespace,
-  elementIdentifier: DataElementIdentifier
-) =>
-  (keyAuthorizations?.namespaces?.includes(namespace) ||
-    keyAuthorizations?.dataElements?.get(namespace)?.includes(elementIdentifier)) ??
-  false
 
 const collectElements = (issuerSigned: IssuerSigned, deviceNamespaces?: DeviceNamespaces) => {
   const elements: Array<ElementCandidate> = []
@@ -809,10 +859,10 @@ const collectElements = (issuerSigned: IssuerSigned, deviceNamespaces?: DeviceNa
  * survives a callback that throws on a `FAILED` check instead of collecting them.
  */
 export const reportDeviceRequestMatch = (match: DeviceRequestMatchResult, onCheck: VerificationCallback) => {
+  const result = { type: 'deviceRequestMatch', match } as const
+
   for (const docRequest of match.docRequests) {
     const check = `Device response must satisfy doc request ${docRequest.docRequestIndex} for docType '${docRequest.docType}'`
-
-    const result = { type: 'deviceRequestMatch', match } as const
 
     if (docRequest.success) {
       onCheck({ status: 'PASSED', check, category: 'DOCUMENT_FORMAT', result })
@@ -825,20 +875,22 @@ export const reportDeviceRequestMatch = (match: DeviceRequestMatchResult, onChec
         result,
       })
     }
+  }
 
-    // Only the documents answering this doc request can over-disclose for it.
-    for (const document of docRequest.validDocuments) {
-      if (document.claims.unrequestedClaims.length === 0) continue
+  for (const { documentIndex, docRequestIndexes, unrequestedClaims } of findOverDisclosure(match)) {
+    const docRequests =
+      docRequestIndexes.length === 1
+        ? `doc request ${docRequestIndexes[0]}`
+        : `doc requests ${docRequestIndexes.join(', ')}`
 
-      onCheck({
-        status: 'WARNING',
-        check: `Document ${document.documentIndex} must not disclose elements that were not requested`,
-        category: 'DOCUMENT_FORMAT',
-        reason: `Document ${document.documentIndex} disclosed ${document.claims.unrequestedClaims
-          .map((claim) => `'${claim.elementIdentifier}' in namespace '${claim.namespace}'`)
-          .join(', ')}, which doc request ${docRequest.docRequestIndex} did not ask for`,
-      })
-    }
+    onCheck({
+      status: 'WARNING',
+      check: `Document ${documentIndex} must not disclose elements that were not requested`,
+      category: 'DOCUMENT_FORMAT',
+      reason: `Document ${documentIndex} disclosed ${unrequestedClaims
+        .map((claim) => `'${claim.elementIdentifier}' in namespace '${claim.namespace}'`)
+        .join(', ')}, which ${docRequests} did not ask for`,
+    })
   }
 
   if (match.unrequestedDocuments.length > 0) {
@@ -851,6 +903,44 @@ export const reportDeviceRequestMatch = (match: DeviceRequestMatchResult, onChec
         .join(', ')}, which the device request did not ask for`,
     })
   }
+}
+
+/**
+ * Per document, the elements it disclosed that no doc request it may answer asked for, in response
+ * order. The response does not say which doc request a document answers, so every doc request of
+ * its docType is considered, also one the document fails: with two doc requests of the same
+ * docType, an element is only over-disclosed when neither asks for it. A document of another docType
+ * does not answer the doc request, and is reported as an unrequested document instead.
+ */
+const findOverDisclosure = (match: DeviceRequestMatchResult) => {
+  const documents = new Map<number, { docRequestIndexes: Array<number>; unrequestedClaims: Array<DisclosedElement> }>()
+
+  for (const docRequest of match.docRequests) {
+    for (const document of [...docRequest.validDocuments, ...docRequest.failedDocuments]) {
+      if (!document.docType.success) continue
+
+      const { unrequestedClaims } = document.claims
+      const overDisclosure = documents.get(document.documentIndex)
+      if (!overDisclosure) {
+        documents.set(document.documentIndex, { docRequestIndexes: [docRequest.docRequestIndex], unrequestedClaims })
+        continue
+      }
+
+      overDisclosure.docRequestIndexes.push(docRequest.docRequestIndex)
+      overDisclosure.unrequestedClaims = overDisclosure.unrequestedClaims.filter((claim) =>
+        unrequestedClaims.some(
+          (other) =>
+            other.namespace === claim.namespace &&
+            other.elementIdentifier === claim.elementIdentifier &&
+            other.source === claim.source
+        )
+      )
+    }
+  }
+
+  return Array.from(documents, ([documentIndex, overDisclosure]) => ({ documentIndex, ...overDisclosure }))
+    .filter(({ unrequestedClaims }) => unrequestedClaims.length > 0)
+    .sort((a, b) => a.documentIndex - b.documentIndex)
 }
 
 const docRequestFailureReason = (docRequest: DocRequestMatch) => {

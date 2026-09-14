@@ -8,8 +8,10 @@ import { IssuerNamespaces, type IssuerNamespacesEncodedStructure } from './issue
 import type { IssuerSignedItem } from './issuer-signed-item'
 import type { Namespace } from './namespace'
 
+// 18013-5 8.3.2.1.2.2: `nameSpaces` is optional, and left out when no issuer-signed element is
+// disclosed, as `IssuerNameSpaces` must have at least one namespace.
 const issuerSignedSchema = typedMap([
-  ['nameSpaces', z.instanceof(IssuerNamespaces)],
+  ['nameSpaces', z.instanceof(IssuerNamespaces).exactOptional()],
   ['issuerAuth', z.instanceof(IssuerAuth)],
 ])
 
@@ -30,10 +32,12 @@ export class IssuerSigned extends CborStructure<IssuerSignedEncodedStructure, Is
         const map: IssuerSignedDecodedStructure = TypedMap.fromMap(input)
 
         // Need to transform namespace into class type
-        map.set(
-          'nameSpaces',
-          IssuerNamespaces.fromEncodedStructure(input.get('nameSpaces') as IssuerNamespacesEncodedStructure)
-        )
+        if (input.has('nameSpaces')) {
+          map.set(
+            'nameSpaces',
+            IssuerNamespaces.fromEncodedStructure(input.get('nameSpaces') as IssuerNamespacesEncodedStructure)
+          )
+        }
 
         // Need to transform namespace into class type
         map.set('issuerAuth', IssuerAuth.fromEncodedStructure(input.get('issuerAuth') as IssuerAuthEncodedStructure))
@@ -42,7 +46,8 @@ export class IssuerSigned extends CborStructure<IssuerSignedEncodedStructure, Is
       },
       encode: (output) => {
         const map = output.toMap() as Map<unknown, unknown>
-        map.set('nameSpaces', output.get('nameSpaces').encodedStructure)
+        const nameSpaces = output.get('nameSpaces')
+        if (nameSpaces !== undefined) map.set('nameSpaces', nameSpaces.encodedStructure)
         map.set('issuerAuth', output.get('issuerAuth').encodedStructure)
 
         return map
@@ -59,7 +64,7 @@ export class IssuerSigned extends CborStructure<IssuerSignedEncodedStructure, Is
   }
 
   public getIssuerNamespace(namespace: Namespace) {
-    return this.issuerNamespaces.getIssuerNamespace(namespace)
+    return this.issuerNamespaces?.getIssuerNamespace(namespace)
   }
 
   public getPrettyClaims(namespace: Namespace) {

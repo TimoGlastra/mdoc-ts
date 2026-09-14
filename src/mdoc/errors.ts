@@ -25,6 +25,27 @@ export class DeviceKeyNotAuthorizedError extends MdlError {}
 export class MissingRequestedElementError extends MdlError {}
 
 /**
+ * The elements selected for disclosure in a device response do not fit the doc request: an element
+ * is selected that the doc request does not ask for, or a selected element is answered with the same
+ * age attestation as a requested element that is left out.
+ */
+export class InvalidElementSelectionError extends MdlError {}
+
+/**
+ * A credential is used to answer a doc request for another docType: the docType of its mobile
+ * security object is not the docType the doc request asks for.
+ */
+export class DocTypeMismatchError extends MdlError {}
+
+/**
+ * ISO/IEC 18013-5 7.2.5: "an mDL reader shall not request more than two age_over_NN data elements".
+ * Thrown when creating an items request that asks for more than two in a namespace, and when a
+ * device response would disclose more than two in a namespace, as together they narrow down the age
+ * of the holder.
+ */
+export class AgeOverLimitExceededError extends MdlError {}
+
+/**
  * The options to match a device request with do not fit the device request: they refer to a doc
  * request the device request does not have, or to the same doc request more than once.
  */

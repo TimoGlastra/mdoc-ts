@@ -2,7 +2,7 @@
 '@owf/mdoc': minor
 ---
 
-Add `Verifier.matchDeviceRequest` and `Holder.matchDeviceRequest` to match a `DeviceRequest`. The verifier checks whether a `DeviceResponse` satisfies it, and the holder selects which credentials can answer which doc request. Both apply the same rules and return the same nested result, so it shows what failed and not just that something failed:
+Add `Verifier.matchDeviceRequest` and `Holder.matchDeviceRequest` to match a `DeviceRequest`. The verifier checks whether a `DeviceResponse` satisfies it, and the holder selects which credentials can answer which doc request. Both share the same matching and return the same nested result, so it shows what failed and not just that something failed:
 
 - Per doc request: `success`, and the valid and failed documents (`validDocuments` and `failedDocuments`) or credentials (`validCredentials` and `failedCredentials`).
 - Per document or credential: `success`, a `docType` check and a `claims` check.
@@ -10,7 +10,7 @@ Add `Verifier.matchDeviceRequest` and `Holder.matchDeviceRequest` to match a `De
 
 Every level is a union on `success`, so checking `success` narrows everything below it: when `match.success` is `true`, every doc request has at least one valid document or credential, and its checks are successful.
 
-A requested element can be answered issuer-signed, or device-signed when the device key is authorized for it in the MSO. The verifier only accepts issuer-signed elements and requires every element by default. Use `matchOptions` to mark elements optional or allow them from `deviceSigned`, per doc request by `docRequestIndex`:
+A requested element can be answered issuer-signed, or device-signed when the device key is authorized for it in the MSO. A holder passes a credential as `{ issuerSigned, deviceNamespaces }` to provide the values it can disclose device-signed, and a credential only matches when `DeviceResponse.createWithDeviceRequest` can answer the doc request with the same `deviceNamespaces`. The holder matches as if every element may come from either source. The verifier only accepts issuer-signed elements and requires every element by default. Use `matchOptions` to mark elements optional or allow them from `deviceSigned`, per doc request by `docRequestIndex`:
 
 ```ts
 const match = Verifier.matchDeviceRequest({
@@ -31,4 +31,4 @@ const match = Verifier.matchDeviceRequest({
 })
 ```
 
-`DeviceResponse.verify`, `Verifier.verifyDeviceResponse` and `IsoMdocDcApi.verifyResponse` run the same match when you pass a `deviceRequest`, with the options in `deviceRequestMatchOptions` and the result in `deviceRequestMatch`. A failed match lists every missing element instead of stopping at the first one, and throws a `VerificationError` (which still extends `MdlError`) with the match attached as `error.assessment.result.match`.
+`DeviceResponse.verify`, `Verifier.verifyDeviceResponse` and `IsoMdocDcApi.verifyResponse` run the same match when you pass a `deviceRequest`, with the options in `deviceRequestMatchOptions` and the result in `deviceRequestMatch`. A failed match lists every missing element instead of stopping at the first one, and throws a `VerificationError` (which still extends `MdlError`) with the match attached as `error.assessment.result.match`. Match options that do not fit the device request throw an `InvalidDeviceRequestMatchOptionsError` before anything is verified. Elements a document disclosed that no doc request of its docType asked for are reported once per document as a `WARNING`.

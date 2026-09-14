@@ -5,6 +5,7 @@ import {
   DeviceNamespaces,
   DeviceRequest,
   DeviceResponse,
+  DeviceSigned,
   DeviceSignedItems,
   DocRequest,
   type DocTypeMatchSuccess,
@@ -12,7 +13,7 @@ import {
   type DocumentClaimsMatchSuccess,
   DocumentError,
   InvalidDeviceRequestMatchOptionsError,
-  type IssuerSigned,
+  IssuerSigned,
   ItemsRequest,
   KeyAuthorizations,
   SessionTranscript,
@@ -294,8 +295,123 @@ describe('matchDeviceRequest', () => {
     })
   })
 
+  test('a device-signed element the device key is not authorized for is reported once, on its claim', async () => {
+    const deviceNamespace = 'com.example.device'
+    const deviceRequest = createDeviceRequest([
+      { namespaces: { [mdlNamespace]: { family_name: true }, [deviceNamespace]: { session_id: false } } },
+    ])
+
+    // `createWithDeviceRequest` refuses to authenticate unauthorized elements (18013-5 9.1.3.4), so
+    // the MSO is swapped for one without key authorizations afterwards, as a non-conformant mdoc
+    // would produce it.
+    const authorized = await createDeviceResponse({
+      deviceRequest,
+      issuerSigned: [
+        await createIssuerSigned({ keyAuthorizations: KeyAuthorizations.create({ namespaces: [deviceNamespace] }) }),
+      ],
+      deviceNamespaces: DeviceNamespaces.create({
+        deviceNamespaces: new Map([
+          [deviceNamespace, DeviceSignedItems.create({ deviceSignedItems: new Map([['session_id', 'abc']]) })],
+        ]),
+      }),
+    })
+    const [document] = authorized.documents ?? []
+    const deviceResponse = DeviceResponse.createSimple({
+      documents: [
+        Document.create({
+          docType: document.docType,
+          issuerSigned: IssuerSigned.create({
+            issuerAuth: (await createIssuerSigned()).issuerAuth,
+            issuerNamespaces: document.issuerSigned.issuerNamespaces,
+          }),
+          deviceSigned: document.deviceSigned,
+        }),
+      ],
+    })
+
+    // By default the element must be issuer-signed, so it is disclosed from a disallowed source.
+    const withoutOptions = Verifier.matchDeviceRequest({ deviceRequest, deviceResponse })
+    const [withoutOptionsDocument] = withoutOptions.docRequests[0].failedDocuments
+    expect(withoutOptionsDocument.claims.failedClaims).toEqual([
+      expect.objectContaining({
+        elementIdentifier: 'session_id',
+        failure: 'disallowedSource',
+        disclosedFrom: 'deviceSigned',
+      }),
+    ])
+    expect(withoutOptionsDocument.claims.unrequestedClaims).toStrictEqual([])
+
+    // Allowed from deviceSigned, it still does not answer the request without the authorization.
+    const match = Verifier.matchDeviceRequest({
+      deviceRequest,
+      deviceResponse,
+      matchOptions: {
+        docRequests: [{ docRequestIndex: 0, elements: { [deviceNamespace]: { '*': { source: 'deviceSigned' } } } }],
+      },
+    })
+    const [matchDocument] = match.docRequests[0].failedDocuments
+    expect(matchDocument.claims.failedClaims).toStrictEqual([
+      {
+        success: false,
+        namespace: deviceNamespace,
+        elementIdentifier: 'session_id',
+        intentToRetain: false,
+        optional: false,
+        failure: 'deviceKeyNotAuthorized',
+        disclosedFrom: 'deviceSigned',
+        reason: `Element 'session_id' in namespace '${deviceNamespace}' was disclosed through deviceSigned, but the device key is not authorized for it in the mobile security object`,
+      },
+    ])
+    expect(matchDocument.claims.unrequestedClaims).toStrictEqual([])
+  })
+
+  test('an unauthorized device-signed element is reported when an issuer-signed one is also present', async () => {
+    const deviceRequest = createDeviceRequest([{ namespaces: { [mdlNamespace]: { family_name: true } } }])
+    const [document] =
+      (await createDeviceResponse({ deviceRequest, issuerSigned: [await createIssuerSigned()] })).documents ?? []
+
+    // The mdoc also self-asserts family_name, which the MSO does not authorize the device key for.
+    // Device auth is not part of the match, so it is kept as is.
+    const deviceResponse = DeviceResponse.createSimple({
+      documents: [
+        Document.create({
+          docType: document.docType,
+          issuerSigned: document.issuerSigned,
+          deviceSigned: DeviceSigned.create({
+            deviceNamespaces: DeviceNamespaces.create({
+              deviceNamespaces: new Map([
+                [mdlNamespace, DeviceSignedItems.create({ deviceSignedItems: new Map([['family_name', 'Roe']]) })],
+              ]),
+            }),
+            deviceAuth: document.deviceSigned.deviceAuth,
+          }),
+        }),
+      ],
+    })
+
+    const match = Verifier.matchDeviceRequest({
+      deviceRequest,
+      deviceResponse,
+      matchOptions: {
+        docRequests: [
+          { docRequestIndex: 0, elements: { [mdlNamespace]: { family_name: { source: 'deviceSigned' } } } },
+        ],
+      },
+    })
+
+    // The device-signed element is disclosed from the allowed source, so its missing authorization is
+    // the failure, and neither disclosed family_name is unrequested.
+    const [matchDocument] = match.docRequests[0].failedDocuments
+    expect(matchDocument.claims.failedClaims).toEqual([
+      expect.objectContaining({ failure: 'deviceKeyNotAuthorized', disclosedFrom: 'deviceSigned' }),
+    ])
+    expect(matchDocument.claims.unrequestedClaims).toStrictEqual([])
+  })
+
   test('a device-signed age attestation does not answer a request for an issuer-signed one', async () => {
-    const disclosedRequest = createDeviceRequest([{ namespaces: { [mdlNamespace]: { family_name: true } } }])
+    const disclosedRequest = createDeviceRequest([
+      { namespaces: { [mdlNamespace]: { family_name: true, age_over_21: true } } },
+    ])
     const deviceRequest = createDeviceRequest([{ namespaces: { [mdlNamespace]: { age_over_18: true } } }])
 
     // An mdoc that self-asserts age_over_21 in the namespace the issuer signs. The MSO authorizes
@@ -325,7 +441,9 @@ describe('matchDeviceRequest', () => {
   })
 
   test('an issuer-signed element still answers the request when a device-signed one is also present', async () => {
-    const disclosedRequest = createDeviceRequest([{ namespaces: { [mdlNamespace]: { age_over_18: true } } }])
+    const disclosedRequest = createDeviceRequest([
+      { namespaces: { [mdlNamespace]: { age_over_18: true, age_over_21: true } } },
+    ])
     const deviceRequest = createDeviceRequest([{ namespaces: { [mdlNamespace]: { age_over_18: true } } }])
 
     const deviceResponse = await createDeviceResponse({
@@ -595,6 +713,114 @@ describe('DeviceResponse.verify with a device request', () => {
     const warning = checks.find((c) => c.check.includes('must not disclose elements that were not requested'))
     expect(warning?.status).toBe('WARNING')
     expect(warning?.reason).toContain('birth_date')
+  })
+
+  test('over-disclosure is a WARNING also for a document that misses a requested element', async () => {
+    const photoIdDocType = 'org.iso.23220.photoid.1'
+    const disclosedRequest = createDeviceRequest([
+      { namespaces: { [mdlNamespace]: { family_name: true, birth_date: true } } },
+      { docType: photoIdDocType, namespaces: { [mdlNamespace]: { family_name: true } } },
+    ])
+    const deviceRequest = createDeviceRequest([
+      { namespaces: { [mdlNamespace]: { family_name: true, portrait: true } } },
+    ])
+
+    const deviceResponse = await createDeviceResponse({
+      deviceRequest: disclosedRequest,
+      issuerSigned: [await createIssuerSigned(), await createIssuerSigned({ docType: photoIdDocType })],
+    })
+
+    const checks: Array<VerificationAssessment> = []
+    await deviceResponse.verify(
+      {
+        deviceRequest,
+        sessionTranscript,
+        trustedCertificates,
+        disableCertificateChainValidation: true,
+        onCheck: (check) => checks.push(check),
+      },
+      mdocContext
+    )
+
+    expect(checks.find((c) => c.check.startsWith('Device response must satisfy doc request 0'))?.status).toBe('FAILED')
+
+    // The document of another docType does not answer the doc request, so it is reported as an
+    // unrequested document rather than as over-disclosing for it.
+    const warnings = checks.filter((c) => c.check.includes('must not disclose elements that were not requested'))
+    expect(warnings).toStrictEqual([
+      {
+        status: 'WARNING',
+        check: 'Document 0 must not disclose elements that were not requested',
+        category: 'DOCUMENT_FORMAT',
+        reason: `Document 0 disclosed 'birth_date' in namespace '${mdlNamespace}', which doc request 0 did not ask for`,
+      },
+    ])
+    expect(
+      checks.find((c) => c.check === 'Device response must not contain documents that were not requested')?.reason
+    ).toContain(`document 1 with docType '${photoIdDocType}'`)
+  })
+
+  test('over-disclosure is judged against every doc request of the docType of a document', async () => {
+    const disclosedRequest = createDeviceRequest([
+      { namespaces: { [mdlNamespace]: { family_name: true, given_name: true } } },
+      { namespaces: { [mdlNamespace]: { birth_date: true } } },
+    ])
+    const deviceRequest = createDeviceRequest([
+      { namespaces: { [mdlNamespace]: { family_name: true } } },
+      { namespaces: { [mdlNamespace]: { birth_date: true } } },
+    ])
+
+    const deviceResponse = await createDeviceResponse({
+      deviceRequest: disclosedRequest,
+      issuerSigned: [await createIssuerSigned(), await createIssuerSigned()],
+    })
+
+    const checks: Array<VerificationAssessment> = []
+    const { deviceRequestMatch } = await deviceResponse.verify(
+      {
+        deviceRequest,
+        sessionTranscript,
+        trustedCertificates,
+        disableCertificateChainValidation: true,
+        onCheck: (check) => checks.push(check),
+      },
+      mdocContext
+    )
+
+    expect(deviceRequestMatch?.success).toBe(true)
+
+    // Each document answers one of the doc requests, so what the other one asks for is not
+    // over-disclosure. Only given_name, which neither asks for, is — reported once.
+    const warnings = checks.filter((c) => c.check.includes('must not disclose elements that were not requested'))
+    expect(warnings).toStrictEqual([
+      {
+        status: 'WARNING',
+        check: 'Document 0 must not disclose elements that were not requested',
+        category: 'DOCUMENT_FORMAT',
+        reason: `Document 0 disclosed 'given_name' in namespace '${mdlNamespace}', which doc requests 0, 1 did not ask for`,
+      },
+    ])
+  })
+
+  test('invalid match options are rejected before the response is verified', async () => {
+    const deviceRequest = createDeviceRequest([{ namespaces: { [mdlNamespace]: { family_name: true } } }])
+    const deviceResponse = await createDeviceResponse({ deviceRequest, issuerSigned: [await createIssuerSigned()] })
+
+    const checks: Array<VerificationAssessment> = []
+    await expect(
+      deviceResponse.verify(
+        {
+          deviceRequest,
+          deviceRequestMatchOptions: { docRequests: [{ docRequestIndex: 1 }] },
+          sessionTranscript,
+          trustedCertificates,
+          disableCertificateChainValidation: true,
+          onCheck: (check) => checks.push(check),
+        },
+        mdocContext
+      )
+    ).rejects.toThrow(InvalidDeviceRequestMatchOptionsError)
+    expect(checks).toStrictEqual([])
   })
 
   test('the default verification callback throws a VerificationError carrying the match', async () => {

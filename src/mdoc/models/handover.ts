@@ -22,18 +22,10 @@ export abstract class Handover<EncodedStructure = unknown, DecodedStructure = En
     }
   }
 
-  /**
-   * Whether this handover structure requires a reader key. Can
-   * be overridden in extending handover classes.
-   */
   public get requiresReaderKey() {
     return false
   }
 
-  /**
-   * Whether this handover structure requires device engagement structure. Can
-   * be overridden in extending handover classes.
-   */
   public get requiresDeviceEngagement() {
     return false
   }

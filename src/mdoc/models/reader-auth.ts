@@ -14,11 +14,16 @@ export class ReaderAuth extends Sign1 {
       verificationCallback?: VerificationCallback
       /**
        * Trust anchors for the reader's certificate chain (e.g. CAs listed in a
-       * RICAL). When provided, the chain in this Sign1's x5chain header is
-       * validated against these anchors per RFC 5280. When omitted, only the
-       * detached signature is verified — chain trust is not established.
+       * RICAL). The chain in this Sign1's x5chain header is validated against
+       * these anchors per RFC 5280. Without trust anchors the chain check FAILS,
+       * unless `disableCertificateChainValidation` is set.
        */
       trustedCertificates?: Array<Uint8Array>
+      /**
+       * Only verify the detached signature, without establishing trust in the
+       * reader's certificate chain. The reader is then not authenticated.
+       */
+      disableCertificateChainValidation?: boolean
       now?: Date
     },
     ctx: Pick<MdocContext, 'cose' | 'x509'>
@@ -46,9 +51,9 @@ export class ReaderAuth extends Sign1 {
       reason: 'Signature is invalid on the reader auth',
     })
 
-    if (options.trustedCertificates) {
+    if (!options.disableCertificateChainValidation) {
       try {
-        if (options.trustedCertificates.length === 0) {
+        if (!options.trustedCertificates || options.trustedCertificates.length === 0) {
           throw new Error('No trusted reader certificates provided.')
         }
 

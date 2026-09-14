@@ -81,8 +81,8 @@ describe('IssuerNamespaces presentation encoding', () => {
     const payload = issuerSignedItemBytes()
     const disclosed = decodeNamespaces(payload).getIssuerNamespace(NAMESPACE) ?? []
 
-    // limitDisclosureToDeviceRequestNameSpaces builds the presented namespaces out of the
-    // very same IssuerSignedItem instances, so the issuer bytes have to survive the rebuild.
+    // DeviceResponse.createWithDeviceRequest builds the presented namespaces out of the very same
+    // IssuerSignedItem instances, so the issuer bytes have to survive the rebuild.
     const namespaces = IssuerNamespaces.create({ issuerNamespaces: new Map([[NAMESPACE, disclosed]]) })
 
     expect(hex.encode(namespaces.encode())).toEqual(hex.encode(encodedNamespaces(payload)))

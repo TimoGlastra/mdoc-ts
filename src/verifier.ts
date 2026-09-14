@@ -17,11 +17,6 @@ export class Verifier {
   public static async verifyDeviceResponse(
     options: {
       deviceRequest?: DeviceRequest
-      /**
-       * Options to match the response against `deviceRequest` with: per doc request the elements
-       * that are optional or that may be answered from `deviceSigned`. By default every requested
-       * element is required and must be issuer-signed.
-       */
       deviceRequestMatchOptions?: DeviceRequestMatchOptions
       deviceResponse: Uint8Array | DeviceResponse
       sessionTranscript: SessionTranscript | Uint8Array
@@ -44,27 +39,16 @@ export class Verifier {
   }
 
   /**
-   * Match a device response against the device request it answers, without verifying it.
-   *
-   * The ISO mdoc DC API protocol (`org-iso-mdoc`) has no query language such as DCQL to express
-   * which claims a response has to contain, so the device request itself is the query: this reports
-   * per doc request, per document and per check (docType and claims) whether the response satisfies
-   * it.
+   * Match a device response against the device request it answers, without verifying it. See
+   * {@link matchDeviceRequest} for what is matched.
    *
    * `Verifier.verifyDeviceResponse` runs the same match as part of verification when a
    * `deviceRequest` is passed, reporting it through `onCheck` and returning it as
-   * `deviceRequestMatch`. Use this method to match a response without verifying it.
-   *
-   * Applies the same rules as `Holder.matchDeviceRequest`, with which a holder selects the
-   * credentials to answer the device request with.
+   * `deviceRequestMatch`.
    */
   public static matchDeviceRequest(options: {
     deviceRequest: Uint8Array | DeviceRequest
     deviceResponse: Uint8Array | DeviceResponse
-    /**
-     * Per doc request the elements that are optional or that may be answered from `deviceSigned`.
-     * By default every requested element is required and must be issuer-signed.
-     */
     matchOptions?: DeviceRequestMatchOptions
   }): DeviceRequestMatchResult {
     return matchDeviceRequest({

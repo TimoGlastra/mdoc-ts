@@ -20,6 +20,18 @@ export const collectDeviceSignedElements = (deviceNamespaces?: DeviceNamespaces)
   )
 
 /**
+ * Whether the device key is authorized to authenticate a device-signed element, either for its
+ * whole namespace or for the data element itself (18013-5 9.1.2.4).
+ */
+export const isDeviceSignedElementAuthorized = (
+  keyAuthorizations: KeyAuthorizations | undefined,
+  { namespace, elementIdentifier }: DeviceSignedElement
+) =>
+  (keyAuthorizations?.namespaces?.includes(namespace) ||
+    keyAuthorizations?.dataElements?.get(namespace)?.includes(elementIdentifier)) ??
+  false
+
+/**
  * The device-signed elements the device key is not authorized to authenticate.
  *
  * ISO/IEC 18013-5 9.1.3.4: "An mdoc shall only authenticate response data elements in
@@ -32,15 +44,10 @@ export const collectDeviceSignedElements = (deviceNamespaces?: DeviceNamespaces)
 export const findUnauthorizedDeviceSignedElements = (options: {
   deviceNamespaces?: DeviceNamespaces
   keyAuthorizations?: KeyAuthorizations
-}): Array<DeviceSignedElement> => {
-  const authorizedNamespaces = options.keyAuthorizations?.namespaces ?? []
-  const authorizedDataElements = options.keyAuthorizations?.dataElements
-
-  return collectDeviceSignedElements(options.deviceNamespaces).filter(
-    ({ namespace, elementIdentifier }) =>
-      !authorizedNamespaces.includes(namespace) && !authorizedDataElements?.get(namespace)?.includes(elementIdentifier)
+}): Array<DeviceSignedElement> =>
+  collectDeviceSignedElements(options.deviceNamespaces).filter(
+    (element) => !isDeviceSignedElementAuthorized(options.keyAuthorizations, element)
   )
-}
 
 /**
  * A shared description of unauthorized elements, so the mdoc's error and the mdoc reader's failed
