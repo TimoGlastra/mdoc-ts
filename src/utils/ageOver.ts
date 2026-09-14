@@ -2,8 +2,8 @@ import type { VerificationCallback } from '../mdoc/check-callback'
 import type { DataElementIdentifier } from '../mdoc/models/data-element-identifier'
 import type { DataElementValue } from '../mdoc/models/data-element-value'
 import type { DeviceRequest } from '../mdoc/models/device-request'
-import type { ItemsRequest, ItemsRequest, ItemsRequest } from '../mdoc/models/items-request'
-import type { Namespace, Namespace, Namespace } from '../mdoc/models/namespace'
+import type { ItemsRequest } from '../mdoc/models/items-request'
+import type { Namespace } from '../mdoc/models/namespace'
 
 /**
  * ISO/IEC 18013-5 7.2.5: `NN` is always two digits, from `00` to `99`.
