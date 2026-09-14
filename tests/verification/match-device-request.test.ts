@@ -605,21 +605,18 @@ describe('matchDeviceRequest', () => {
     [1, 'Match options refer to doc request 1, but the device request has 1 doc request(s)'],
     [-1, 'Match options refer to doc request -1, but the device request has 1 doc request(s)'],
     [0.5, 'Match options refer to doc request 0.5, but the device request has 1 doc request(s)'],
-  ])(
-    'match options for doc request %s, which the device request does not have, are rejected',
-    async (docRequestIndex, message) => {
-      const deviceRequest = createDeviceRequest([{ namespaces: { [mdlNamespace]: { family_name: true } } }])
-      const deviceResponse = await createDeviceResponse({ deviceRequest, issuerSigned: [await createIssuerSigned()] })
+  ])('match options for doc request %s, which the device request does not have, are rejected', async (docRequestIndex, message) => {
+    const deviceRequest = createDeviceRequest([{ namespaces: { [mdlNamespace]: { family_name: true } } }])
+    const deviceResponse = await createDeviceResponse({ deviceRequest, issuerSigned: [await createIssuerSigned()] })
 
-      expect(() =>
-        Verifier.matchDeviceRequest({
-          deviceRequest,
-          deviceResponse,
-          matchOptions: { docRequests: [{ docRequestIndex, elements: {} }] },
-        })
-      ).toThrow(new InvalidDeviceRequestMatchOptionsError(message))
-    }
-  )
+    expect(() =>
+      Verifier.matchDeviceRequest({
+        deviceRequest,
+        deviceResponse,
+        matchOptions: { docRequests: [{ docRequestIndex, elements: {} }] },
+      })
+    ).toThrow(new InvalidDeviceRequestMatchOptionsError(message))
+  })
 
   test('match options for the same doc request more than once are rejected', async () => {
     const deviceRequest = createDeviceRequest([{ namespaces: { [mdlNamespace]: { family_name: true } } }])
