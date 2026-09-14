@@ -10,11 +10,12 @@ import { base64url } from '@owf/identity-common'
 import { z } from 'zod'
 import { HpkeSuiteId, type MdocContext } from './context'
 import {
-  type DeviceNamespaces,
   DeviceRequest,
   DeviceResponse,
+  type DeviceResponseDocumentOptions,
   type DeviceResponseVerificationResult,
   DocRequest,
+  defaultVerificationCallback,
   EncryptedResponse,
   EncryptedResponseData,
   EncryptionInfo,
@@ -23,7 +24,6 @@ import {
   InvalidDcApiRequestError,
   InvalidDcApiResponseError,
   InvalidEncryptionInfoError,
-  type IssuerSigned,
   ItemsRequest,
   MissingOriginError,
   ReaderAuth,
@@ -31,7 +31,8 @@ import {
   SessionTranscript,
   type VerificationCallback,
 } from './mdoc'
-import type { DeviceRequestElementOptions } from './utils/matchDeviceRequest'
+import { verifyAgeOverRequestLimit } from './utils/ageOver'
+import type { DeviceRequestMatchOptions } from './utils/matchDeviceRequest'
 
 /**
  * DC API protocol identifier for ISO/IEC TS 18013-7:2025 Annex C.
@@ -84,11 +85,11 @@ export type IsoMdocDcApiParsedDocRequest = {
   docType: string
   namespaces: Map<string, Map<string, boolean>>
   /**
-   * Reader auth is optional in Annex C. `false` means the request carried no reader signature at
-   * all — not that verification failed (an invalid signature surfaces through the verification
-   * callback).
+   * Whether the doc request carries reader auth, which is optional in Annex C. This does not say
+   * whether reader auth is valid: an invalid signature or an untrusted certificate chain surfaces
+   * through the verification callback.
    */
-  readerAuthenticated: boolean
+  hasReaderAuth: boolean
   readerCertificateChain?: Array<Uint8Array>
 }
 
@@ -218,10 +219,14 @@ export class IsoMdocDcApi {
       request: IsoMdocDcApiRequest
       origin: string | undefined
       /**
-       * Trust anchors for reader certificate chains. When omitted, reader signatures are still
-       * verified but chain trust is not established.
+       * Trust anchors for reader certificate chains. Without trust anchors the chain check of a doc
+       * request with reader auth FAILS, unless `disableReaderCertificateChainValidation` is set.
        */
       trustedReaderCertificates?: Array<Uint8Array>
+      /**
+       * Only verify reader signatures, without establishing trust in the reader certificate chains.
+       */
+      disableReaderCertificateChainValidation?: boolean
       verificationCallback?: VerificationCallback
       now?: Date
     },
@@ -242,6 +247,8 @@ export class IsoMdocDcApi {
     assertP256PublicKey(encryptionInfo.recipientPublicKey)
 
     const deviceRequest = DeviceRequest.decode(base64url.decode(request.deviceRequest))
+    verifyAgeOverRequestLimit(deviceRequest, options.verificationCallback ?? defaultVerificationCallback)
+
     const sessionTranscript = await SessionTranscript.forIsoMdocDcApi({ encryptionInfoBase64Url, origin }, ctx)
 
     const docRequests: Array<IsoMdocDcApiParsedDocRequest> = []
@@ -254,6 +261,7 @@ export class IsoMdocDcApi {
             readerAuthentication: { itemsRequest: docRequest.itemsRequest, sessionTranscript },
             verificationCallback: options.verificationCallback,
             trustedCertificates: options.trustedReaderCertificates,
+            disableCertificateChainValidation: options.disableReaderCertificateChainValidation,
             now: options.now,
           },
           ctx
@@ -264,7 +272,7 @@ export class IsoMdocDcApi {
         docRequest,
         docType: docRequest.itemsRequest.docType,
         namespaces: docRequest.itemsRequest.namespaces,
-        readerAuthenticated: !!readerAuth,
+        hasReaderAuth: !!readerAuth,
         readerCertificateChain: readerAuth?.certificateChain,
       })
     }
@@ -288,15 +296,16 @@ export class IsoMdocDcApi {
   public static async createResponse(
     options: {
       parsedRequest: IsoMdocDcApiParsedRequest
-      documents: Array<{
-        issuerSigned: IssuerSigned
-        deviceKey: CoseKey
-        /**
-         * Index into `parsedRequest.docRequests` of the doc request this document answers.
-         */
-        docRequestIndex: number
-        deviceNamespaces?: DeviceNamespaces
-      }>
+      /**
+       * The documents to disclose, each naming the doc request of `parsedRequest.docRequests` it
+       * answers through `docRequestIndex`. See `DeviceResponse.createWithDeviceRequest` for how the
+       * elements to disclose are selected.
+       */
+      documents: Array<
+        Pick<DeviceResponseDocumentOptions, 'issuerSigned' | 'docRequestIndex' | 'elements' | 'deviceNamespaces'> & {
+          deviceKey: CoseKey
+        }
+      >
     },
     ctx: Pick<MdocContext, 'crypto' | 'cose'>
   ): Promise<IsoMdocDcApiResponse> {
@@ -310,6 +319,7 @@ export class IsoMdocDcApi {
         documents: options.documents.map((document) => ({
           docRequestIndex: document.docRequestIndex,
           issuerSigned: document.issuerSigned,
+          elements: document.elements,
           deviceNamespaces: document.deviceNamespaces,
           signature: { signingKey: document.deviceKey },
         })),
@@ -395,12 +405,7 @@ export class IsoMdocDcApi {
       encryptionInfo: string
       recipientKey: CoseKey
       deviceRequest?: DeviceRequest
-      /**
-       * Per-element match options for `deviceRequest`, for elements that are optional or that may
-       * be answered from `deviceSigned`. Every element not named here is required and must be
-       * issuer-signed.
-       */
-      deviceRequestElements?: DeviceRequestElementOptions
+      deviceRequestMatchOptions?: DeviceRequestMatchOptions
       trustedCertificates: Array<{ issuance: Array<Uint8Array>; status?: Array<Uint8Array> }>
       disableCertificateChainValidation?: boolean
       disableStatusValidation?: boolean
@@ -418,7 +423,7 @@ export class IsoMdocDcApi {
     const verificationResult = await deviceResponse.verify(
       {
         deviceRequest: options.deviceRequest,
-        deviceRequestElements: options.deviceRequestElements,
+        deviceRequestMatchOptions: options.deviceRequestMatchOptions,
         sessionTranscript,
         trustedCertificates: options.trustedCertificates,
         disableCertificateChainValidation: options.disableCertificateChainValidation,

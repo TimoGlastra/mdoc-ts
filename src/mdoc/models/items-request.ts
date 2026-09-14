@@ -1,5 +1,7 @@
 import { CborStructure, typedMap } from '@owf/cose'
 import { z } from 'zod'
+import { describeAgeOverLimitViolations, findAgeOverRequestLimitViolations } from '../../utils/ageOver'
+import { AgeOverLimitExceededError } from '../errors'
 import type { DataElementIdentifier } from './data-element-identifier'
 import type { DocType } from './doctype'
 import type { IntentToRetain } from './intent-to-retain'
@@ -39,11 +41,23 @@ export class ItemsRequest extends CborStructure<ItemsRequestEncodedStructure, It
     return this.structure.get('nameSpaces')
   }
 
+  /**
+   * Throws an `AgeOverLimitExceededError` when more than two `age_over_NN` elements are requested in
+   * a namespace (18013-5 7.2.5). A decoded items request is not checked, so that the mdoc can report
+   * such a request instead.
+   */
   public static create(options: ItemsRequestOptions): ItemsRequest {
     const namespaces =
       options.namespaces instanceof Map
         ? options.namespaces
         : new Map(Object.entries(options.namespaces).map(([ns, inner]) => [ns, new Map(Object.entries(inner))]))
+
+    const violations = findAgeOverRequestLimitViolations(namespaces)
+    if (violations.length > 0) {
+      throw new AgeOverLimitExceededError(
+        `Items request for docType '${options.docType}' requests ${describeAgeOverLimitViolations(violations)}, but at most two age_over_NN elements may be requested per namespace`
+      )
+    }
 
     const structure = new Map<unknown, unknown>([
       ['docType', options.docType],

@@ -93,11 +93,7 @@ export interface MdocContext {
     }) => Promise<CoseKey>
 
     /**
-     *
-     * Verify a X.509 certificate chain
-     *
-     * Return the parsed chain where index 0 is the leaf certificate and the last entry is the X.509 certificate found in the trusted certificates (root)
-     *
+     * Verify a X.509 certificate chain, returning it with the leaf first and the trusted root last.
      */
     verifyCertificateChain: (input: {
       trustedCertificates: Uint8Array[]

@@ -1,8 +1,10 @@
 import { base64url, hex } from '@owf/identity-common'
 import { describe, expect, test } from 'vitest'
 import {
+  AgeOverLimitExceededError,
   CoseKey,
   DeviceRequest,
+  DocRequest,
   EncryptedResponse,
   EncryptedResponseData,
   EncryptionInfo,
@@ -11,6 +13,7 @@ import {
   InvalidDcApiResponseError,
   InvalidEncryptionInfoError,
   IsoMdocDcApi,
+  ItemsRequest,
   MissingOriginError,
   type VerificationAssessment,
 } from '../../src'
@@ -55,7 +58,7 @@ describe('IsoMdocDcApi round trip', () => {
     const parsedRequest = await IsoMdocDcApi.parseRequest({ request, origin }, mdocContext)
     expect(parsedRequest.docRequests).toHaveLength(1)
     expect(parsedRequest.docRequests[0].docType).toBe(mdlDocType)
-    expect(parsedRequest.docRequests[0].readerAuthenticated).toBe(false)
+    expect(parsedRequest.docRequests[0].hasReaderAuth).toBe(false)
     expect(parsedRequest.encryptionInfo.nonce).toHaveLength(16)
 
     const response = await IsoMdocDcApi.createResponse(
@@ -127,6 +130,66 @@ describe('IsoMdocDcApi round trip', () => {
 
     await expect(IsoMdocDcApi.parseRequest({ request, origin: undefined }, mdocContext)).rejects.toThrow(
       MissingOriginError
+    )
+  })
+
+  test('createRequest refuses to request more than two age_over_NN elements in a namespace', async () => {
+    await expect(
+      IsoMdocDcApi.createRequest(
+        {
+          docRequests: [
+            {
+              docType: mdlDocType,
+              namespaces: { [mdlNamespace]: { age_over_18: false, age_over_21: false, age_over_65: false } },
+            },
+          ],
+          recipientPublicKey,
+        },
+        mdocContext
+      )
+    ).rejects.toThrow(
+      new AgeOverLimitExceededError(
+        `Items request for docType '${mdlDocType}' requests 'age_over_18', 'age_over_21', 'age_over_65' in namespace '${mdlNamespace}', but at most two age_over_NN elements may be requested per namespace`
+      )
+    )
+  })
+
+  test('parseRequest rejects a request for more than two age_over_NN elements in a namespace', async () => {
+    const { request } = await createRequest()
+
+    // `ItemsRequest.create` refuses such a request, so it is built from its structure.
+    const deviceRequest = DeviceRequest.create({
+      docRequests: [
+        DocRequest.create({
+          itemsRequest: ItemsRequest.fromEncodedStructure(
+            new Map<unknown, unknown>([
+              ['docType', mdlDocType],
+              [
+                'nameSpaces',
+                new Map([
+                  [
+                    mdlNamespace,
+                    new Map([
+                      ['age_over_18', false],
+                      ['age_over_21', false],
+                      ['age_over_65', false],
+                    ]),
+                  ],
+                ]),
+              ],
+            ])
+          ),
+        }),
+      ],
+    })
+
+    await expect(
+      IsoMdocDcApi.parseRequest(
+        { request: { ...request, deviceRequest: base64url.encode(deviceRequest.encode()) }, origin },
+        mdocContext
+      )
+    ).rejects.toThrow(
+      `Doc request 0 requests 'age_over_18', 'age_over_21', 'age_over_65' in namespace '${mdlNamespace}'`
     )
   })
 
@@ -313,7 +376,7 @@ describe('IsoMdocDcApi reader auth', () => {
       mdocContext
     )
 
-    expect(parsedRequest.docRequests[0].readerAuthenticated).toBe(true)
+    expect(parsedRequest.docRequests[0].hasReaderAuth).toBe(true)
     expect(parsedRequest.docRequests[0].readerCertificateChain).toHaveLength(1)
     expect(checks.filter((check) => check.status === 'FAILED')).toStrictEqual([])
   })
@@ -342,6 +405,29 @@ describe('IsoMdocDcApi reader auth', () => {
 
     const signatureCheck = checks.find((check) => check.check.includes('Signature is invalid on the reader auth'))
     expect(signatureCheck?.status).toBe('FAILED')
+  })
+
+  test('a signed request without trusted reader certificates fails, unless chain validation is disabled', async () => {
+    const { readerKey, readerCertificate } = await createReaderCertificate()
+
+    const { request } = await IsoMdocDcApi.createRequest(
+      {
+        docRequests: [{ docType: mdlDocType, namespaces: requestedNamespaces }],
+        recipientPublicKey,
+        readerAuth: { signingKey: readerKey, certificateChain: [readerCertificate], origin },
+      },
+      mdocContext
+    )
+
+    await expect(IsoMdocDcApi.parseRequest({ request, origin }, mdocContext)).rejects.toThrow(
+      'No trusted reader certificates provided.'
+    )
+
+    const parsedRequest = await IsoMdocDcApi.parseRequest(
+      { request, origin, disableReaderCertificateChainValidation: true },
+      mdocContext
+    )
+    expect(parsedRequest.docRequests[0].hasReaderAuth).toBe(true)
   })
 })
 

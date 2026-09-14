@@ -10,19 +10,32 @@ import {
 import { base64url, stringToBytes } from '@owf/identity-common'
 import { z } from 'zod'
 import type { MdocContext } from '../../context'
+import { describeAgeOverLimitViolations, findAgeOverLimitViolations } from '../../utils/ageOver'
+import { getOwnProperty } from '../../utils/getOwnProperty'
 import {
   describeUnauthorizedDeviceSignedElements,
   findUnauthorizedDeviceSignedElements,
 } from '../../utils/keyAuthorizations'
-import { limitDisclosureToDeviceRequestNameSpaces } from '../../utils/limitDisclosure'
 import {
-  type DeviceRequestElementOptions,
+  type ClaimMatch,
+  type DeviceRequestMatchOptions,
   type DeviceRequestMatchResult,
   matchDeviceRequest,
+  matchElements,
   reportDeviceRequestMatch,
+  validateDeviceRequestMatchOptions,
 } from '../../utils/matchDeviceRequest'
 import { defaultVerificationCallback, type VerificationCallback } from '../check-callback'
-import { DeviceKeyNotAuthorizedError, EitherSignatureOrMacMustBeProvidedError } from '../errors'
+import {
+  AgeOverLimitExceededError,
+  DeviceKeyNotAuthorizedError,
+  DocTypeMismatchError,
+  EitherSignatureOrMacMustBeProvidedError,
+  InvalidElementSelectionError,
+  MissingRequestedElementError,
+} from '../errors'
+import type { DataElementIdentifier } from './data-element-identifier'
+import type { DataElementValue } from './data-element-value'
 import { DeviceAuth, type DeviceAuthOptions } from './device-auth'
 import { DeviceAuthentication } from './device-authentication'
 import { DeviceMac } from './device-mac'
@@ -30,11 +43,16 @@ import { DeviceNamespaces } from './device-namespaces'
 import type { DeviceRequest } from './device-request'
 import { DeviceSignature } from './device-signature'
 import { DeviceSigned } from './device-signed'
+import { DeviceSignedItems } from './device-signed-items'
 import type { DocRequest } from './doc-request'
 import { Document, type DocumentEncodedStructure } from './document'
 import { DocumentError, type DocumentErrorStructure } from './document-error'
 import type { IssuerAuthVerificationResult } from './issuer-auth'
+import { IssuerNamespaces } from './issuer-namespaces'
 import { IssuerSigned } from './issuer-signed'
+import type { IssuerSignedItem } from './issuer-signed-item'
+import type { KeyAuthorizations } from './key-authorizations'
+import type { Namespace } from './namespace'
 import type { SessionTranscript } from './session-transcript'
 
 const deviceResponseEncodedSchema = typedMap([
@@ -85,6 +103,22 @@ export type DeviceResponseDocumentOptions = {
    * Index into `deviceRequest.docRequests` of the doc request this document answers.
    */
   docRequestIndex: number
+  /**
+   * The requested elements to disclose, per namespace. Defaults to every element the doc request
+   * asks for. Pass a subset to leave out elements, for instance the ones the user declined to share.
+   *
+   * Two `age_over_NN` requests can be answered with the same age attestation (18013-5 7.2.5), which
+   * `disclosedElementIdentifier` of the claims of `Holder.matchDeviceRequest` shows. Such elements
+   * have to be selected together or left out together, as leaving out only one would not keep its
+   * answer from being disclosed.
+   */
+  elements?: Record<Namespace, Array<DataElementIdentifier>>
+  /**
+   * Values to disclose device-signed. Every selected requested element that is not issuer-signed,
+   * but that the device key is authorized for in the MSO, has to be provided here. Only the values
+   * of selected requested elements are disclosed and authenticated, so a value that is not requested
+   * or that `elements` leaves out is not.
+   */
   deviceNamespaces?: DeviceNamespaces
   signature?: {
     signingKey: CoseKey
@@ -164,12 +198,7 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
   public async verify(
     options: {
       deviceRequest?: DeviceRequest
-      /**
-       * Per-element match options for `deviceRequest`, for elements that are optional or that may
-       * be answered from `deviceSigned`. Every element not named here is required and must be
-       * issuer-signed.
-       */
-      deviceRequestElements?: DeviceRequestElementOptions
+      deviceRequestMatchOptions?: DeviceRequestMatchOptions
       sessionTranscript: SessionTranscript | Uint8Array
       ephemeralReaderKey?: CoseKey
       disableCertificateChainValidation?: boolean
@@ -182,6 +211,11 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
     ctx: Pick<MdocContext, 'cose' | 'x509' | 'crypto' | 'fetch'>
   ): Promise<DeviceResponseVerificationResult> {
     const onCheck = options.onCheck ?? defaultVerificationCallback
+
+    // Invalid match options are a mistake of the caller, so fail on them before verifying anything.
+    if (options.deviceRequest) {
+      validateDeviceRequestMatchOptions(options.deviceRequest, options.deviceRequestMatchOptions)
+    }
 
     const version = this.structure.get('version')
     onCheck({
@@ -233,6 +267,20 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
           },
           ctx
         )
+
+      // 18013-5 9.3.1 step 4: the docType of the document is not signed, so it must be the docType of
+      // the MSO, whether or not a device request is matched.
+      const mobileSecurityObjectDocType = document.issuerSigned.issuerAuth.mobileSecurityObject.docType
+      onCheck({
+        status: document.docType === mobileSecurityObjectDocType ? 'PASSED' : 'FAILED',
+        check: 'The docType of the document must match the docType of the mobile security object.',
+        category: 'ISSUER_AUTH',
+        reason:
+          document.docType !== mobileSecurityObjectDocType
+            ? `Document has docType '${document.docType}', but the mobile security object has docType '${mobileSecurityObjectDocType}'`
+            : undefined,
+      })
+
       documentResults.push({
         trustedIssuanceChain,
         statusList,
@@ -248,7 +296,7 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
       deviceRequestMatch = matchDeviceRequest({
         deviceRequest: options.deviceRequest,
         deviceResponse: this,
-        elements: options.deviceRequestElements,
+        matchOptions: options.deviceRequestMatchOptions,
       })
       reportDeviceRequestMatch(deviceRequestMatch, onCheck)
     }
@@ -271,8 +319,10 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
   private static async createDocument(
     options: {
       docRequest: DocRequest
+      docRequestIndex: number
       sessionTranscript: SessionTranscript | Uint8Array
       issuerSigned: IssuerSigned
+      elements?: Record<Namespace, Array<DataElementIdentifier>>
       deviceNamespaces?: DeviceNamespaces
       signature?: {
         signingKey: CoseKey
@@ -293,16 +343,33 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
 
     const { docRequest } = options
     const docType = docRequest.itemsRequest.docType
-    const disclosedIssuerNamespace = limitDisclosureToDeviceRequestNameSpaces(options.issuerSigned, docRequest)
 
-    const deviceNamespaces = options.deviceNamespaces ?? DeviceNamespaces.create({ deviceNamespaces: new Map() })
+    // Every access to the mobile security object decodes it, so decode it once.
+    const mobileSecurityObject = options.issuerSigned.issuerAuth.mobileSecurityObject
+    const { keyAuthorizations } = mobileSecurityObject.deviceKeyInfo
 
-    // 18013-5 9.1.3.4 binds the mdoc as well as the mdoc reader, so refuse to authenticate elements
-    // the device key is not authorized for rather than emit a response every reader must reject.
-    const unauthorized = findUnauthorizedDeviceSignedElements({
-      deviceNamespaces,
-      keyAuthorizations: options.issuerSigned.issuerAuth.mobileSecurityObject.deviceKeyInfo.keyAuthorizations,
+    // The document is labeled with the requested docType, which is not signed, so a credential of
+    // another docType would produce a document every reader has to reject.
+    if (mobileSecurityObject.docType !== docType) {
+      throw new DocTypeMismatchError(
+        `Credential has docType '${mobileSecurityObject.docType}', but doc request ${options.docRequestIndex} requests docType '${docType}'`
+      )
+    }
+
+    // Only the selected elements are disclosed, so values in `deviceNamespaces` that are not requested
+    // do not need to be authorized, the same as `Holder.matchDeviceRequest` ignores them.
+    const { issuerNamespaces: disclosedIssuerNamespaces, deviceNamespaces } = DeviceResponse.selectElements({
+      docRequest,
+      issuerSigned: options.issuerSigned,
+      keyAuthorizations,
+      deviceNamespaces: options.deviceNamespaces,
+      elements: options.elements,
     })
+
+    // 18013-5 9.1.3.4 binds the mdoc as well as the mdoc reader. Selection only picks authorized
+    // device-signed elements, so this guards that invariant rather than emit a response every reader
+    // must reject.
+    const unauthorized = findUnauthorizedDeviceSignedElements({ deviceNamespaces, keyAuthorizations })
     if (unauthorized.length > 0) {
       throw new DeviceKeyNotAuthorizedError(describeUnauthorizedDeviceSignedElements(unauthorized))
     }
@@ -360,7 +427,7 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
     return Document.create({
       docType,
       issuerSigned: IssuerSigned.create({
-        issuerNamespaces: disclosedIssuerNamespace,
+        issuerNamespaces: disclosedIssuerNamespaces,
         issuerAuth: options.issuerSigned.issuerAuth,
       }),
       deviceSigned: DeviceSigned.create({
@@ -368,6 +435,116 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
         deviceAuth: DeviceAuth.create(deviceAuthOptions),
       }),
     })
+  }
+
+  /**
+   * The issuer-signed items and device-signed elements to disclose for a doc request, selected the
+   * same way as `Holder.matchDeviceRequest` matches a credential: a requested element is disclosed
+   * issuer-signed when the issuer signed it, and otherwise device-signed when the device key is
+   * authorized for it and its value is in the device namespaces.
+   *
+   * Only the selected requested elements are disclosed, from either source: a device-signed element
+   * that is not requested, or that `elements` leaves out, is not disclosed.
+   */
+  private static selectElements(options: {
+    docRequest: DocRequest
+    issuerSigned: IssuerSigned
+    keyAuthorizations: KeyAuthorizations | undefined
+    deviceNamespaces?: DeviceNamespaces
+    elements?: Record<Namespace, Array<DataElementIdentifier>>
+  }) {
+    const { claims } = matchElements({
+      mode: 'holder',
+      namespaces: options.docRequest.itemsRequest.namespaces,
+      issuerSigned: options.issuerSigned,
+      keyAuthorizations: options.keyAuthorizations,
+      deviceNamespaces: options.deviceNamespaces,
+    })
+
+    if (options.elements) {
+      for (const [namespace, elementIdentifiers] of Object.entries(options.elements)) {
+        for (const elementIdentifier of elementIdentifiers) {
+          if (!options.docRequest.itemsRequest.namespaces.get(namespace)?.has(elementIdentifier)) {
+            throw new InvalidElementSelectionError(
+              `Element '${elementIdentifier}' in namespace '${namespace}' is selected for disclosure, but the doc request does not request it`
+            )
+          }
+        }
+      }
+    }
+
+    const isSelected = ({ namespace, elementIdentifier }: ClaimMatch) =>
+      options.elements ? (getOwnProperty(options.elements, namespace)?.includes(elementIdentifier) ?? false) : true
+
+    // The element that answers each requested element left out of the selection, with that claim.
+    const declinedElements = new Map(
+      claims.flatMap(({ claim, element }) => (element && !isSelected(claim) ? [[element, claim] as const] : []))
+    )
+
+    const issuerNamespaces = new Map<Namespace, Array<IssuerSignedItem>>()
+    const deviceNamespaces = new Map<Namespace, Map<DataElementIdentifier, DataElementValue>>()
+    for (const match of claims) {
+      const { claim } = match
+      if (!isSelected(claim)) continue
+
+      if (match.element === undefined) throw new MissingRequestedElementError(match.claim.reason)
+      const { element } = match
+
+      // An age attestation can answer more than one `age_over_NN` request (18013-5 7.2.5).
+      // Disclosing it for this element would also answer a requested element that is left out, so
+      // leaving that one out would have no effect.
+      const declined = declinedElements.get(element)
+      if (declined) {
+        throw new InvalidElementSelectionError(
+          `Element '${claim.elementIdentifier}' in namespace '${claim.namespace}' is selected for disclosure, but it is answered with '${element.elementIdentifier}', which also answers '${declined.elementIdentifier}' that is not selected. Select both or neither`
+        )
+      }
+
+      if (!element.issuerSignedItem) {
+        const items = deviceNamespaces.get(element.namespace) ?? new Map()
+        items.set(element.elementIdentifier, element.elementValue)
+        deviceNamespaces.set(element.namespace, items)
+        continue
+      }
+
+      const items = issuerNamespaces.get(claim.namespace) ?? []
+      // An age attestation can answer more than one `age_over_NN` request, but is disclosed once.
+      if (!items.includes(element.issuerSignedItem)) items.push(element.issuerSignedItem)
+      issuerNamespaces.set(claim.namespace, items)
+    }
+
+    // 18013-5 7.2.5: a reader must not request more than two age attestations, as together they
+    // narrow down the age of the holder. Only what is disclosed counts, so a holder can still answer
+    // such a request by selecting at most two of them.
+    const disclosedElementIdentifiers = new Map<Namespace, Array<DataElementIdentifier>>(
+      Array.from(issuerNamespaces, ([namespace, items]) => [namespace, items.map((item) => item.elementIdentifier)])
+    )
+    for (const [namespace, items] of deviceNamespaces) {
+      disclosedElementIdentifiers.set(namespace, [
+        ...(disclosedElementIdentifiers.get(namespace) ?? []),
+        ...items.keys(),
+      ])
+    }
+    const ageOverLimitViolations = findAgeOverLimitViolations(disclosedElementIdentifiers)
+    if (ageOverLimitViolations.length > 0) {
+      throw new AgeOverLimitExceededError(
+        `Doc request would be answered with ${describeAgeOverLimitViolations(ageOverLimitViolations)}, but at most two age_over_NN elements may be disclosed per namespace. Select at most two of them`
+      )
+    }
+
+    return {
+      // `IssuerNameSpaces` must have at least one namespace, so it is left out when no issuer-signed
+      // element is disclosed.
+      issuerNamespaces: issuerNamespaces.size > 0 ? IssuerNamespaces.create({ issuerNamespaces }) : undefined,
+      deviceNamespaces: DeviceNamespaces.create({
+        deviceNamespaces: new Map(
+          Array.from(deviceNamespaces, ([namespace, items]) => [
+            namespace,
+            DeviceSignedItems.create({ deviceSignedItems: items }),
+          ])
+        ),
+      }),
+    }
   }
 
   private static fromDocuments(documents: Array<Document>) {
@@ -407,8 +584,10 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
         DeviceResponse.createDocument(
           {
             docRequest: DeviceResponse.findDocRequest(options.deviceRequest, document.docRequestIndex),
+            docRequestIndex: document.docRequestIndex,
             sessionTranscript: options.sessionTranscript,
             issuerSigned: document.issuerSigned,
+            elements: document.elements,
             deviceNamespaces: document.deviceNamespaces,
             signature: document.signature,
             mac: document.mac,

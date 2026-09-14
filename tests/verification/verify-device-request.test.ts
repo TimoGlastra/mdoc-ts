@@ -1,7 +1,7 @@
 import { hex } from '@owf/identity-common'
 import { describe, expect, test } from 'vitest'
 import z from 'zod'
-import { DeviceRequest, Holder, SessionTranscript } from '../../src'
+import { DeviceRequest, DocRequest, Holder, ItemsRequest, SessionTranscript, VerificationError } from '../../src'
 import type { VerificationAssessment } from '../../src/mdoc/check-callback'
 import { Handover } from '../../src/mdoc/models/handover'
 import { mdocContext } from '../context'
@@ -40,7 +40,7 @@ describe('Holder.verifyDeviceRequest with trustedCertificates', () => {
     handover: NullHandover.fromEncodedStructure(null),
   })
 
-  test('without trustedCertificates: no chain-trust check is emitted', async () => {
+  test('without trustedCertificates: chain-trust check FAILS', async () => {
     const { callback, checks } = collectChecks()
 
     await Holder.verifyDeviceRequest(
@@ -48,6 +48,24 @@ describe('Holder.verifyDeviceRequest with trustedCertificates', () => {
         deviceRequest: DeviceRequest.decode(hex.decode(DEVICE_REQUEST_CBOR)),
         sessionTranscript,
         verificationCallback: callback,
+      },
+      mdocContext
+    )
+
+    const chainCheck = checks.find((c) => c.check === 'Reader certificate chain must be trusted')
+    expect(chainCheck?.status).toBe('FAILED')
+    expect(chainCheck?.reason).toContain('No trusted reader certificates')
+  })
+
+  test('with disableCertificateChainValidation: no chain-trust check is emitted', async () => {
+    const { callback, checks } = collectChecks()
+
+    await Holder.verifyDeviceRequest(
+      {
+        deviceRequest: DeviceRequest.decode(hex.decode(DEVICE_REQUEST_CBOR)),
+        sessionTranscript,
+        verificationCallback: callback,
+        disableCertificateChainValidation: true,
       },
       mdocContext
     )
@@ -123,5 +141,108 @@ describe('Holder.verifyDeviceRequest with trustedCertificates', () => {
     const chainCheck = checks.find((c) => c.check === 'Reader certificate chain must be trusted')
     expect(chainCheck).toBeDefined()
     expect(chainCheck?.status).toBe('PASSED')
+  })
+})
+
+describe('Holder.verifyDeviceRequest age_over_NN request limit (18013-5 7.2.5)', () => {
+  const sessionTranscript = SessionTranscript.create({
+    handover: NullHandover.fromEncodedStructure(null),
+  })
+  const check = 'Device request must not request more than 2 age_over_NN elements per namespace'
+  const mdlNamespace = 'org.iso.18013.5.1'
+
+  // `ItemsRequest.create` refuses a request for more than two age_over_NN elements, so the items
+  // request is built from its structure, as a decoded request would be.
+  const createDeviceRequest = (namespaces: Record<string, Record<string, boolean>>) =>
+    DeviceRequest.create({
+      docRequests: [
+        DocRequest.create({
+          itemsRequest: ItemsRequest.fromEncodedStructure(
+            new Map<unknown, unknown>([
+              ['docType', 'org.iso.18013.5.1.mDL'],
+              [
+                'nameSpaces',
+                new Map(
+                  Object.entries(namespaces).map(([namespace, elements]) => [
+                    namespace,
+                    new Map(Object.entries(elements)),
+                  ])
+                ),
+              ],
+            ])
+          ),
+        }),
+      ],
+    })
+
+  test('two age_over_NN elements in a namespace pass', async () => {
+    const { callback, checks } = collectChecks()
+
+    await Holder.verifyDeviceRequest(
+      {
+        deviceRequest: createDeviceRequest({
+          [mdlNamespace]: { family_name: true, age_over_18: false, age_over_65: false },
+        }),
+        sessionTranscript,
+        verificationCallback: callback,
+      },
+      mdocContext
+    )
+
+    expect(checks.find((c) => c.check === check)?.status).toBe('PASSED')
+  })
+
+  test('two age_over_NN elements in each of two namespaces pass', async () => {
+    const { callback, checks } = collectChecks()
+
+    await Holder.verifyDeviceRequest(
+      {
+        deviceRequest: createDeviceRequest({
+          [mdlNamespace]: { age_over_18: false, age_over_21: false },
+          'org.iso.18013.5.1.US': { age_over_18: false, age_over_21: false },
+        }),
+        sessionTranscript,
+        verificationCallback: callback,
+      },
+      mdocContext
+    )
+
+    expect(checks.find((c) => c.check === check)?.status).toBe('PASSED')
+  })
+
+  test('three age_over_NN elements in a namespace fail', async () => {
+    const { callback, checks } = collectChecks()
+
+    await Holder.verifyDeviceRequest(
+      {
+        deviceRequest: createDeviceRequest({
+          [mdlNamespace]: { family_name: true, age_over_18: false, age_over_21: false, age_over_65: false },
+        }),
+        sessionTranscript,
+        verificationCallback: callback,
+      },
+      mdocContext
+    )
+
+    expect(checks.find((c) => c.check === check)).toEqual({
+      status: 'FAILED',
+      category: 'DOCUMENT_FORMAT',
+      check,
+      reason: `Doc request 0 requests 'age_over_18', 'age_over_21', 'age_over_65' in namespace '${mdlNamespace}'`,
+    })
+  })
+
+  test('the default verification callback throws on too many age_over_NN elements', async () => {
+    await expect(
+      Holder.verifyDeviceRequest(
+        {
+          deviceRequest: createDeviceRequest({
+            [mdlNamespace]: { age_over_18: false, age_over_21: false, age_over_65: false },
+          }),
+          sessionTranscript,
+        },
+        mdocContext
+      )
+    ).rejects.toThrow(VerificationError)
   })
 })

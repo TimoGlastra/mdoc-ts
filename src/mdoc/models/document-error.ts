@@ -1,7 +1,6 @@
 import { CborStructure } from '@owf/cose'
 import { z } from 'zod'
 
-// Zod schema for DocumentError
 const documentErrorSchema = z.map(z.string(), z.number())
 
 export type DocumentErrorStructure = z.infer<typeof documentErrorSchema>

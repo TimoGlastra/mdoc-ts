@@ -8,7 +8,7 @@ import {
   type SessionTranscript,
 } from './mdoc/index.js'
 import {
-  type DeviceRequestElementOptions,
+  type DeviceRequestMatchOptions,
   type DeviceRequestMatchResult,
   matchDeviceRequest,
 } from './utils/matchDeviceRequest.js'
@@ -17,12 +17,7 @@ export class Verifier {
   public static async verifyDeviceResponse(
     options: {
       deviceRequest?: DeviceRequest
-      /**
-       * Per-element match options for `deviceRequest`, for elements that are optional or that may
-       * be answered from `deviceSigned`. Every element not named here is required and must be
-       * issuer-signed.
-       */
-      deviceRequestElements?: DeviceRequestElementOptions
+      deviceRequestMatchOptions?: DeviceRequestMatchOptions
       deviceResponse: Uint8Array | DeviceResponse
       sessionTranscript: SessionTranscript | Uint8Array
       ephemeralReaderKey?: CoseKey
@@ -44,27 +39,20 @@ export class Verifier {
   }
 
   /**
-   * Match a device response against the device request it answers, without verifying it.
-   *
-   * The ISO mdoc DC API protocol (`org-iso-mdoc`) has no query language such as DCQL to express
-   * which claims a response has to contain, so the device request itself is the query: this reports
-   * per doc request, per document and per requested element whether the response satisfies it.
+   * Match a device response against the device request it answers, without verifying it. See
+   * {@link matchDeviceRequest} for what is matched.
    *
    * `Verifier.verifyDeviceResponse` runs the same match as part of verification when a
    * `deviceRequest` is passed, reporting it through `onCheck` and returning it as
-   * `deviceRequestMatch`. Use this method to match a response without verifying it.
+   * `deviceRequestMatch`.
    */
   public static matchDeviceRequest(options: {
     deviceRequest: Uint8Array | DeviceRequest
     deviceResponse: Uint8Array | DeviceResponse
-    /**
-     * Per-element match options, for elements that are optional or that may be answered from
-     * `deviceSigned`. Every element not named here is required and must be issuer-signed.
-     */
-    elements?: DeviceRequestElementOptions
+    matchOptions?: DeviceRequestMatchOptions
   }): DeviceRequestMatchResult {
     return matchDeviceRequest({
-      elements: options.elements,
+      matchOptions: options.matchOptions,
       deviceRequest:
         options.deviceRequest instanceof DeviceRequest
           ? options.deviceRequest

@@ -2,7 +2,6 @@ import { describe, expect, test } from 'vitest'
 import { z } from 'zod'
 import {
   CoseKey,
-  DeviceKeyNotAuthorizedError,
   DeviceNamespaces,
   DeviceRequest,
   DeviceResponse,
@@ -13,6 +12,7 @@ import {
   IssuerSigned,
   ItemsRequest,
   KeyAuthorizations,
+  MissingRequestedElementError,
   SessionTranscript,
   type VerificationAssessment,
 } from '../../src'
@@ -31,18 +31,23 @@ const deviceKey = CoseKey.fromJwk(DEVICE_JWK_PRIVATE)
 const sessionTranscript = SessionTranscript.create({ handover: NullHandover.fromEncodedStructure(null) })
 const deviceNamespace = 'com.example.device'
 
-const familyNameRequest = DeviceRequest.create({
-  docRequests: [
-    DocRequest.create({
-      itemsRequest: ItemsRequest.create({ docType: mdlDocType, namespaces: { [mdlNamespace]: { family_name: true } } }),
-    }),
-  ],
+const createDeviceRequest = (namespaces: Record<string, Record<string, boolean>>) =>
+  DeviceRequest.create({
+    docRequests: [DocRequest.create({ itemsRequest: ItemsRequest.create({ docType: mdlDocType, namespaces }) })],
+  })
+
+const familyNameRequest = createDeviceRequest({ [mdlNamespace]: { family_name: true } })
+// Only requested device-signed elements are disclosed, so a response with device namespaces
+// answers a request that also asks for them.
+const familyNameAndSessionIdRequest = createDeviceRequest({
+  [mdlNamespace]: { family_name: true },
+  [deviceNamespace]: { session_id: false },
 })
 
 const createDeviceResponse = async (options: { issuerSigned: IssuerSigned; deviceNamespaces?: DeviceNamespaces }) =>
   await DeviceResponse.createWithDeviceRequest(
     {
-      deviceRequest: familyNameRequest,
+      deviceRequest: options.deviceNamespaces ? familyNameAndSessionIdRequest : familyNameRequest,
       sessionTranscript,
       documents: [
         {
@@ -158,10 +163,32 @@ describe('key authorizations (18013-5 9.1.3.4)', () => {
     expect(check).toBeUndefined()
   })
 
-  test('creating a response with unauthorized device signed elements throws', async () => {
+  test('creating a response with requested unauthorized device signed elements throws', async () => {
     await expect(
       createDeviceResponse({ issuerSigned: await createIssuerSigned(), deviceNamespaces: sessionIdNamespaces })
-    ).rejects.toThrow(DeviceKeyNotAuthorizedError)
+    ).rejects.toThrow(MissingRequestedElementError)
+  })
+
+  test('unrequested unauthorized device signed elements are not disclosed', async () => {
+    const deviceResponse = await DeviceResponse.createWithDeviceRequest(
+      {
+        deviceRequest: familyNameRequest,
+        sessionTranscript,
+        documents: [
+          {
+            issuerSigned: await createIssuerSigned(),
+            docRequestIndex: 0,
+            deviceNamespaces: sessionIdNamespaces,
+            signature: { signingKey: deviceKey },
+          },
+        ],
+      },
+      mdocContext
+    )
+
+    expect(deviceResponse.documents?.[0].deviceSigned.deviceNamespaces.deviceNamespaces.size).toBe(0)
+    const check = (await collectChecks(deviceResponse)).find((c) => c.check === keyAuthorizationsCheck)
+    expect(check).toBeUndefined()
   })
 
   test('creating a response with authorized device signed elements succeeds', async () => {
@@ -173,6 +200,35 @@ describe('key authorizations (18013-5 9.1.3.4)', () => {
     })
 
     expect(deviceResponse.documents).toHaveLength(1)
+  })
+})
+
+describe('document docType (18013-5 9.3.1)', () => {
+  const docTypeCheck = 'The docType of the document must match the docType of the mobile security object.'
+
+  test('a document with the docType of the MSO PASSES', async () => {
+    const deviceResponse = await createDeviceResponse({ issuerSigned: await createIssuerSigned() })
+
+    const check = (await collectChecks(deviceResponse)).find((c) => c.check === docTypeCheck)
+    expect(check?.status).toBe('PASSED')
+  })
+
+  test('a document with another docType than the MSO FAILS without a device request', async () => {
+    const disclosed = await createDeviceResponse({ issuerSigned: await createIssuerSigned() })
+    const [document] = disclosed.documents ?? []
+    const deviceResponse = DeviceResponse.createSimple({
+      documents: [
+        Document.create({
+          docType: 'org.example.other',
+          issuerSigned: document.issuerSigned,
+          deviceSigned: document.deviceSigned,
+        }),
+      ],
+    })
+
+    const check = (await collectChecks(deviceResponse)).find((c) => c.check === docTypeCheck)
+    expect(check?.status).toBe('FAILED')
+    expect(check?.reason).toContain("'org.example.other'")
   })
 })
 
