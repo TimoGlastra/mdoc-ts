@@ -37,13 +37,8 @@ export class IssuerNamespaces extends CborStructure<
             // Forward the issuer's own bytes for items we received rather than built. A
             // verifier digests the IssuerSignedItemBytes it is given and compares that to
             // valueDigests, so re-encoding from the decoded structure breaks the digest for
-            // any issuer whose encoder differs from ours — the presentation side of the same
-            // problem IssuerSignedItem.isValid solves on the verification side.
-            value.map((isi) =>
-              isi.originalPayloadBytes
-                ? DataItem.fromBuffer(isi.originalPayloadBytes)
-                : DataItem.fromData(isi.encodedStructure)
-            )
+            // any issuer whose encoder differs from ours.
+            value.map((isi) => isi.asDataItem)
           )
         })
         return issuerNamespaces

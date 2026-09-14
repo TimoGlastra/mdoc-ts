@@ -70,9 +70,9 @@ export class SessionTranscript extends CborStructure<
         }
 
         const deviceEngagement = deviceEngagementDataItem
-          ? DeviceEngagement.fromEncodedStructure(deviceEngagementDataItem.data)
+          ? DeviceEngagement.fromDataItem(deviceEngagementDataItem)
           : null
-        const eReaderKey = eReaderKeyDataItem ? EReaderKey.fromEncodedStructure(eReaderKeyDataItem.data) : null
+        const eReaderKey = eReaderKeyDataItem ? EReaderKey.fromDataItem(eReaderKeyDataItem) : null
 
         return {
           deviceEngagement,
@@ -106,8 +106,9 @@ export class SessionTranscript extends CborStructure<
         }
 
         return [
-          deviceEngagement ? DataItem.fromData(deviceEngagement.encodedStructure) : null,
-          eReaderKey ? DataItem.fromData(eReaderKey.encodedStructure) : null,
+          // DeviceEngagementBytes and EReaderKeyBytes are embedded as received.
+          deviceEngagement ? deviceEngagement.asDataItem : null,
+          eReaderKey ? eReaderKey.asDataItem : null,
           handover.encodedStructure,
         ]
       },
@@ -126,6 +127,16 @@ export class SessionTranscript extends CborStructure<
     return this.structure.handover
   }
 
+  /**
+   * A session transcript passed as bytes is either `SessionTranscript` or `SessionTranscriptBytes`
+   * (tagged with tag 24).
+   */
+  public static from(sessionTranscript: SessionTranscript | Uint8Array): SessionTranscript {
+    return sessionTranscript instanceof SessionTranscript
+      ? sessionTranscript
+      : SessionTranscript.decode(sessionTranscript)
+  }
+
   public static create(options: SessionTranscriptOptions): SessionTranscript {
     return this.fromDecodedStructure({
       deviceEngagement: options.deviceEngagement ?? null,
@@ -139,7 +150,7 @@ export class SessionTranscript extends CborStructure<
    *
    * For QR handover, exact CBOR bytes matter for session key derivation.
    * Use DeviceEngagement.decode() and EReaderKey.decode() to preserve original bytes -
-   * calling encode() on decoded objects will return the identical bytes.
+   * calling encode() on decoded objects returns the identical bytes.
    */
   public static forQrHandover(options: { deviceEngagement: DeviceEngagement; eReaderKey: EReaderKey }) {
     return this.fromDecodedStructure({

@@ -1,10 +1,14 @@
+import { RegisteredCwtHeaderClaimKey } from '@owf/cose'
 import { X509Certificate } from '@peculiar/x509'
 import { describe, expect, test } from 'vitest'
 import {
   CoseKey,
   DateOnly,
   DeviceKey,
+  DuplicateElementIdentifierError,
+  InvalidValidityInfoError,
   IssuerSigned,
+  MdlError,
   SignatureAlgorithm,
   SignatureAlgorithmDoesNotMatchSigningKeyAlgorithmError,
 } from '../../src'
@@ -164,5 +168,100 @@ describe('issuer signed builder', () => {
     const encodedChain = issuerSignedWithChain.encode()
     const decodedChain = IssuerSigned.decode(encodedChain)
     expect(decodedChain.issuerAuth.certificateChain).toHaveLength(2)
+  })
+
+  const certificate = new Uint8Array(new X509Certificate(ISSUER_CERTIFICATE).rawData)
+  const signOptions = {
+    signingKey: CoseKey.fromJwk(ISSUER_PRIVATE_KEY_JWK),
+    certificates: [certificate],
+    algorithm: SignatureAlgorithm.ES256,
+    digestAlgorithm: 'SHA-256' as const,
+    deviceKeyInfo: { deviceKey: DeviceKey.fromJwk(DEVICE_JWK_PUBLIC) },
+  }
+
+  test('a single certificate is encoded as a byte string in the x5chain header (RFC 9360)', async () => {
+    const issuerSigned = await new IssuerSignedBuilder('org.iso.18013.5.1.mDL', mdocContext)
+      .addIssuerNamespace('org.iso.18013.5.1', { family_name: 'Smith' })
+      .sign({ ...signOptions, validityInfo: { signed, validFrom, validUntil } })
+
+    const x5chain = issuerSigned.issuerAuth.unprotectedHeaders.headers?.get(RegisteredCwtHeaderClaimKey.X5Chain)
+    expect(x5chain).toBeInstanceOf(Uint8Array)
+    expect(IssuerSigned.decode(issuerSigned.encode()).issuerAuth.certificateChain).toEqual([certificate])
+  })
+
+  test.each([
+    ['validFrom is before signed', { signed, validFrom: new Date(signed.getTime() - 1000), validUntil }],
+    ['validUntil is validFrom', { signed, validFrom, validUntil: validFrom }],
+    ['validUntil is before validFrom', { signed, validFrom, validUntil: new Date(validFrom.getTime() - 1000) }],
+  ])('signing throws when %s (9.1.2.4)', async (_, validityInfo) => {
+    const issuerSignedBuilder = new IssuerSignedBuilder('org.iso.18013.5.1.mDL', mdocContext).addIssuerNamespace(
+      'org.iso.18013.5.1',
+      { family_name: 'Smith' }
+    )
+
+    await expect(issuerSignedBuilder.sign({ ...signOptions, validityInfo })).rejects.toThrow(InvalidValidityInfoError)
+  })
+
+  test('validFrom may be signed', async () => {
+    const issuerSignedBuilder = new IssuerSignedBuilder('org.iso.18013.5.1.mDL', mdocContext).addIssuerNamespace(
+      'org.iso.18013.5.1',
+      { family_name: 'Smith' }
+    )
+
+    await expect(
+      issuerSignedBuilder.sign({ ...signOptions, validityInfo: { signed, validFrom: signed, validUntil } })
+    ).resolves.toBeInstanceOf(IssuerSigned)
+  })
+
+  test('adding an element identifier twice to a namespace throws', () => {
+    const issuerSignedBuilder = new IssuerSignedBuilder('org.iso.18013.5.1.mDL', mdocContext).addIssuerNamespace(
+      'org.iso.18013.5.1',
+      { family_name: 'Smith' }
+    )
+
+    expect(() => issuerSignedBuilder.addIssuerNamespace('org.iso.18013.5.1', { family_name: 'Jones' })).toThrow(
+      DuplicateElementIdentifierError
+    )
+    // The same element identifier in another namespace is a different element.
+    expect(() => issuerSignedBuilder.addIssuerNamespace('org.example', { family_name: 'Jones' })).not.toThrow()
+  })
+
+  test('adding elements that throw leaves the namespace unchanged', async () => {
+    const issuerSignedBuilder = new IssuerSignedBuilder('org.iso.18013.5.1.mDL', mdocContext).addIssuerNamespace(
+      'org.iso.18013.5.1',
+      { family_name: 'Smith' }
+    )
+
+    // `given_name` comes before the duplicate, so it would be added before the call throws.
+    expect(() =>
+      issuerSignedBuilder.addIssuerNamespace('org.iso.18013.5.1', { given_name: 'Ava', family_name: 'Jones' })
+    ).toThrow(DuplicateElementIdentifierError)
+    expect(() => issuerSignedBuilder.addIssuerNamespace('org.iso.18013.5.1', { given_name: 'Ava' })).not.toThrow()
+
+    const issuerSigned = await issuerSignedBuilder.sign({
+      signingKey: CoseKey.fromJwk(ISSUER_PRIVATE_KEY_JWK),
+      certificates: [new Uint8Array(new X509Certificate(ISSUER_CERTIFICATE).rawData)],
+      algorithm: SignatureAlgorithm.ES256,
+      digestAlgorithm: 'SHA-256',
+      deviceKeyInfo: { deviceKey: DeviceKey.fromJwk(DEVICE_JWK_PUBLIC) },
+      validityInfo: { signed, validFrom, validUntil },
+    })
+    expect(
+      issuerSigned.issuerNamespaces?.issuerNamespaces.get('org.iso.18013.5.1')?.map((item) => item.elementIdentifier)
+    ).toEqual(['family_name', 'given_name'])
+  })
+
+  test('adding an element throws when the generated digest ID is already used in the namespace', () => {
+    const constantContext = {
+      ...mdocContext,
+      crypto: { ...mdocContext.crypto, random: (length: number) => new Uint8Array(length) },
+    }
+
+    expect(() =>
+      new IssuerSignedBuilder('org.iso.18013.5.1.mDL', constantContext).addIssuerNamespace('org.iso.18013.5.1', {
+        a: 1,
+        b: 2,
+      })
+    ).toThrow(MdlError)
   })
 })

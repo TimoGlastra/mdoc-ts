@@ -1,6 +1,6 @@
 import {
   type CoseKey,
-  type MacAlgorithm,
+  MacAlgorithm,
   ProtectedHeaders,
   RegisteredCwtHeaderClaimKey,
   type SignatureAlgorithm,
@@ -8,6 +8,7 @@ import {
 } from '@owf/cose'
 import { stringToBytes } from '@owf/identity-common'
 import type { MdocContext } from '../../context'
+import { UnsupportedDeviceMacAlgorithmError } from '../errors'
 import {
   DeviceAuth,
   DeviceMac,
@@ -33,14 +34,13 @@ export class DeviceSignedBuilder {
   }
 
   public addDeviceNamespace(namespace: Namespace, value: Record<string, unknown>) {
-    const deviceSignedItems =
-      this.namespaces.deviceNamespaces.get(namespace) ?? DeviceSignedItems.create({ deviceSignedItems: new Map() })
-
-    for (const [k, v] of Object.entries(value)) {
-      deviceSignedItems.deviceSignedItems.set(k, v)
+    if (!this.namespaces.getDeviceNamespace(namespace)) {
+      this.namespaces.setDeviceNamespace(namespace, DeviceSignedItems.create({ deviceSignedItems: new Map() }))
     }
 
-    this.namespaces.deviceNamespaces.set(namespace, deviceSignedItems)
+    for (const [elementIdentifier, elementValue] of Object.entries(value)) {
+      this.namespaces.setDeviceSignedElement(namespace, elementIdentifier, elementValue)
+    }
 
     return this
   }
@@ -49,15 +49,12 @@ export class DeviceSignedBuilder {
     signingKey: CoseKey
     algorithm: SignatureAlgorithm
     sessionTranscript: SessionTranscript
-    certificate: Uint8Array
   }): Promise<DeviceSigned> {
     const protectedHeaders = ProtectedHeaders.create({
       protectedHeaders: new Map([[RegisteredCwtHeaderClaimKey.Algorithm, options.algorithm]]),
     })
 
-    const unprotectedHeaders = UnprotectedHeaders.create({
-      unprotectedHeaders: new Map([[RegisteredCwtHeaderClaimKey.X5Chain, [options.certificate]]]),
-    })
+    const unprotectedHeaders = UnprotectedHeaders.create({})
 
     if (options.signingKey.keyId) {
       // COSE label 4 (kid) is a bstr per RFC 8152; UTF-8 encode the
@@ -98,20 +95,24 @@ export class DeviceSignedBuilder {
     privateKey: CoseKey
     sessionTranscript: SessionTranscript
     algorithm: MacAlgorithm
-    certificate: Uint8Array
   }): Promise<DeviceSigned> {
+    // 18013-5 9.1.3.5: the device MAC shall use HMAC 256/256, which `DeviceAuth.verify` enforces.
+    if (options.algorithm !== MacAlgorithm.HS256) {
+      throw new UnsupportedDeviceMacAlgorithmError(
+        `Device MAC algorithm must be HMAC 256/256 (${MacAlgorithm.HS256}), received ${options.algorithm}`
+      )
+    }
+
     const protectedHeaders = ProtectedHeaders.create({
       protectedHeaders: new Map<number, unknown>([[RegisteredCwtHeaderClaimKey.Algorithm, options.algorithm]]),
     })
 
-    const unprotectedHeaders = UnprotectedHeaders.create({
-      unprotectedHeaders: new Map([[RegisteredCwtHeaderClaimKey.X5Chain, [options.certificate]]]),
-    })
+    const unprotectedHeaders = UnprotectedHeaders.create({})
 
     if (options.privateKey.keyId) {
       // COSE label 4 (kid) is a bstr per RFC 8152; UTF-8 encode the
       // text form at the header boundary.
-      protectedHeaders.headers?.set(RegisteredCwtHeaderClaimKey.KeyId, stringToBytes(options.privateKey.keyId))
+      unprotectedHeaders.headers?.set(RegisteredCwtHeaderClaimKey.KeyId, stringToBytes(options.privateKey.keyId))
     }
 
     const deviceAuthentication = DeviceAuthentication.create({
@@ -126,18 +127,20 @@ export class DeviceSignedBuilder {
       payload: null,
     })
 
-    const salt = await this.ctx.crypto.digest({ digestAlgorithm: 'SHA-256', bytes: options.sessionTranscript.encode() })
-
-    const derivedKey = await this.ctx.crypto.hdkf({
-      privateKey: options.privateKey.privateKey,
-      publicKey: options.publicKey.publicKey,
-      info: stringToBytes('EMacKey'),
-      salt,
-    })
+    const derivedKey = await deviceMac.createDeviceMacKey(
+      {
+        privateKey: options.privateKey,
+        publicKey: options.publicKey,
+        sessionTranscript: options.sessionTranscript,
+        info: 'EMacKey',
+      },
+      this.ctx
+    )
 
     const deviceMacWithTag = await deviceMac.authenticate(
       {
         key: derivedKey,
+        algorithm: options.algorithm,
         detachedPayload: deviceAuthentication.encode({ asDataItem: true }),
       },
       this.ctx.cose.mac0

@@ -1,15 +1,8 @@
-import {
-  type AnyCborStructure,
-  CborStructure,
-  type CborStructureStaticThis,
-  cborEncode,
-  DataItem,
-  typedMap,
-  zUint8Array,
-} from '@owf/cose'
+import { typedMap, zUint8Array } from '@owf/cose'
 import { compareBytes } from '@owf/identity-common'
 import { z } from 'zod'
 import type { MdocContext } from '../../context'
+import { OriginalBytesCborStructure } from '../original-bytes-cbor-structure'
 import type { DataElementIdentifier } from './data-element-identifier'
 import type { DataElementValue } from './data-element-value'
 import type { IssuerAuth } from './issuer-auth'
@@ -40,18 +33,23 @@ export type IssuerSignedItemOptions = {
   elementValue: DataElementValue
 }
 
-export class IssuerSignedItem extends CborStructure<
+/**
+ * Decoded items keep the `IssuerSignedItemBytes` they were received as, as the digests in the MSO are
+ * computed over them.
+ */
+export class IssuerSignedItem extends OriginalBytesCborStructure<
   IssuerSignedItemEncodedStructure,
   IssuerSignedItemDecodedStructure
 > {
-  #originalPayloadBytes?: Uint8Array
-
   public static override get encodingSchema() {
     return issuerSignedItemSchema
   }
 
+  /**
+   * @deprecated Use {@link originalBytes}.
+   */
   public get originalPayloadBytes() {
-    return this.#originalPayloadBytes
+    return this.originalBytes
   }
 
   public get random() {
@@ -73,9 +71,7 @@ export class IssuerSignedItem extends CborStructure<
   public async isValid(namespace: Namespace, issuerAuth: IssuerAuth, ctx: Pick<MdocContext, 'crypto'>) {
     const digest = await ctx.crypto.digest({
       digestAlgorithm: issuerAuth.mobileSecurityObject.digestAlgorithm,
-      bytes: this.originalPayloadBytes
-        ? cborEncode(DataItem.fromBuffer(this.originalPayloadBytes))
-        : this.encode({ asDataItem: true }),
+      bytes: this.encode({ asDataItem: true }),
     })
 
     const valueDigests = issuerAuth.mobileSecurityObject.valueDigests.valueDigests
@@ -95,19 +91,14 @@ export class IssuerSignedItem extends CborStructure<
       return this.elementValue === issuerAuth.getIssuingCountry(ctx)
     }
 
+    // 18013-5 7.2.1: the check "is only required if the stateOrProvinceName element is present in the DS
+    // certificate".
     if (this.elementIdentifier === 'issuing_jurisdiction') {
-      return this.elementValue === issuerAuth.getIssuingStateOrProvince(ctx)
+      const stateOrProvince = issuerAuth.getIssuingStateOrProvince(ctx)
+      return stateOrProvince === undefined || this.elementValue === stateOrProvince
     }
 
     return false
-  }
-
-  public static fromDataItem<T extends AnyCborStructure>(this: CborStructureStaticThis<T>, dataItem: unknown): T {
-    const item = super.fromDataItem(dataItem) as T
-    if (item instanceof IssuerSignedItem && dataItem instanceof DataItem) {
-      item.#originalPayloadBytes = new Uint8Array(dataItem.buffer)
-    }
-    return item
   }
 
   public static fromOptions(options: IssuerSignedItemOptions) {

@@ -86,7 +86,10 @@ export interface MdocContext {
   }
 
   x509: {
-    getIssuerNameField: (options: { certificate: Uint8Array; field: string }) => string[]
+    /**
+     * The values of a field of the subject distinguished name of a certificate, e.g. `C` or `ST`.
+     */
+    getSubjectNameField: (options: { certificate: Uint8Array; field: string }) => string[]
     getPublicKey: (options: {
       certificate: Uint8Array
       algorithm?: SignatureAlgorithm | MacAlgorithm

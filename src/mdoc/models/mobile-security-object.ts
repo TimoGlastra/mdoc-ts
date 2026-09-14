@@ -1,6 +1,7 @@
 import type { DigestAlgorithm } from '@owf/cose'
 import { CborStructure, TypedMap, typedMap } from '@owf/cose'
 import { z } from 'zod'
+import { supportedVersionRegex } from '../../utils/version'
 import { DeviceKeyInfo, type DeviceKeyInfoEncodedStructure } from './device-key-info'
 import type { DocType } from './doctype'
 import { Status, type StatusEncodedStructure } from './status'
@@ -10,8 +11,7 @@ import { ValueDigests, type ValueDigestsStructure } from './value-digests'
 // Zod schema for MobileSecurityObject
 // MSO has string keys, so we use z.object and set mapsAsObjects: true
 const mobileSecurityObjectSchema = typedMap([
-  // mDOC only defines 1.0
-  ['version', z.literal('1.0')],
+  ['version', z.string().regex(supportedVersionRegex)],
   ['digestAlgorithm', z.enum(['SHA-256', 'SHA-384', 'SHA-512'])],
   ['docType', z.string()],
   ['valueDigests', z.instanceof(ValueDigests)],

@@ -66,7 +66,8 @@ describe('IssuerSignedItem original bytes', () => {
     }).encode({ asDataItem: true })
 
     expect(hex.encode(fromOptionsEncoded)).not.toEqual(hex.encode(receivedTaggedBytes))
-    expect(hex.encode(item.encode({ asDataItem: true }))).not.toEqual(hex.encode(receivedTaggedBytes))
+    // A decoded item encodes with the bytes it was received as.
+    expect(hex.encode(item.encode({ asDataItem: true }))).toEqual(hex.encode(receivedTaggedBytes))
 
     const digest = await mdocContext.crypto.digest({
       digestAlgorithm: 'SHA-256',

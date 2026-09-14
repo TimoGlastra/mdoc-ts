@@ -1,6 +1,6 @@
-import { CborStructure, DataItem, TypedMap, typedMap } from '@owf/cose'
+import { CborStructure, TypedMap, typedMap } from '@owf/cose'
 import { z } from 'zod'
-import { ItemsRequest, type ItemsRequestEncodedStructure } from './items-request'
+import { ItemsRequest } from './items-request'
 import { ReaderAuth, type ReaderAuthEncodedStructure } from './reader-auth'
 
 const docRequestSchema = typedMap([
@@ -22,11 +22,7 @@ export class DocRequest extends CborStructure<DocRequestEncodedStructure, DocReq
       decode: (input) => {
         const map: DocRequestDecodedStructure = TypedMap.fromMap(input)
 
-        const itemsRequestData = input.get('itemsRequest') as DataItem
-        map.set(
-          'itemsRequest',
-          ItemsRequest.fromEncodedStructure(itemsRequestData.data as ItemsRequestEncodedStructure)
-        )
+        map.set('itemsRequest', ItemsRequest.fromDataItem(input.get('itemsRequest')))
 
         if (input.has('readerAuth')) {
           map.set('readerAuth', ReaderAuth.fromEncodedStructure(input.get('readerAuth') as ReaderAuthEncodedStructure))
@@ -36,7 +32,8 @@ export class DocRequest extends CborStructure<DocRequestEncodedStructure, DocReq
       },
       encode: (output) => {
         const map = output.toMap() as Map<unknown, unknown>
-        map.set('itemsRequest', DataItem.fromData(output.get('itemsRequest').encodedStructure))
+        // `ItemsRequestBytes` are embedded as received, as reader authentication signs them.
+        map.set('itemsRequest', output.get('itemsRequest').asDataItem)
 
         const readerAuth = output.get('readerAuth')
         if (readerAuth) {

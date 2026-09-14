@@ -1,4 +1,4 @@
-import { CborStructure, DataItem, TypedMap, typedMap, zUint8Array } from '@owf/cose'
+import { CborStructure, TypedMap, typedMap, zUint8Array } from '@owf/cose'
 import { stringToBytes } from '@owf/identity-common'
 import { z } from 'zod'
 import type { MdocContext } from '../../context'
@@ -35,7 +35,7 @@ export class SessionEstablishment extends CborStructure<
       },
       encode: (output) => {
         const map = output.toMap() as Map<unknown, unknown>
-        map.set('eReaderKey', DataItem.fromData(output.get('eReaderKey').encodedStructure))
+        map.set('eReaderKey', output.get('eReaderKey').asDataItem)
 
         return map
       },
@@ -62,7 +62,11 @@ export class SessionEstablishment extends CborStructure<
       digestAlgorithm: 'SHA-256',
       privateKey: options.eDeviceKeyPrivate.privateKey,
       publicKey: options.eReaderKeyPublic.publicKey,
-      salt: options.sessionTranscript.encode({ asDataItem: true }),
+      // 18013-5 9.1.1.5: the salt is SHA-256(SessionTranscriptBytes).
+      salt: await ctx.crypto.digest({
+        digestAlgorithm: 'SHA-256',
+        bytes: options.sessionTranscript.encode({ asDataItem: true }),
+      }),
       info: stringToBytes('SKReader'),
     })
 

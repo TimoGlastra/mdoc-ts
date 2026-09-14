@@ -9,7 +9,14 @@ import {
 import { stringToBytes } from '@owf/identity-common'
 import type { MdocContext } from '../../context'
 import { randomUnsignedInteger } from '../../utils/randomUnsignedInteger'
-import { AtLeastOneCertificateRequiredError, SignatureAlgorithmDoesNotMatchSigningKeyAlgorithmError } from '../errors'
+import { x5chainHeaderValue } from '../../utils/x5chain'
+import {
+  AtLeastOneCertificateRequiredError,
+  DuplicateElementIdentifierError,
+  InvalidValidityInfoError,
+  MdlError,
+  SignatureAlgorithmDoesNotMatchSigningKeyAlgorithmError,
+} from '../errors'
 import {
   DeviceKeyInfo,
   type DeviceKeyInfoOptions,
@@ -42,19 +49,33 @@ export class IssuerSignedBuilder {
   }
 
   public addIssuerNamespace(namespace: Namespace, values: Record<string, unknown> | Map<string, unknown>) {
-    const issuerNamespace = this.namespaces.getIssuerNamespace(namespace) ?? []
+    // Added to a copy, so that a call that throws leaves the namespace as it was.
+    const issuerNamespace = [...(this.namespaces.getIssuerNamespace(namespace) ?? [])]
 
     const entries = values instanceof Map ? Array.from(values.entries()) : Object.entries(values)
 
-    const issuerSignedItems = entries.map(([key, value]) =>
-      IssuerSignedItem.fromOptions({
-        digestId: randomUnsignedInteger(this.ctx),
-        random: this.ctx.crypto.random(32),
-        elementIdentifier: key,
-        elementValue: value,
-      })
-    )
-    issuerNamespace.push(...issuerSignedItems)
+    for (const [elementIdentifier, elementValue] of entries) {
+      if (issuerNamespace.some((item) => item.elementIdentifier === elementIdentifier)) {
+        throw new DuplicateElementIdentifierError(
+          `Element '${elementIdentifier}' is already added to namespace '${namespace}'`
+        )
+      }
+
+      // Digest IDs identify the digests of a namespace in the MSO, so they must be unique (9.1.2.4)
+      const digestId = randomUnsignedInteger(this.ctx)
+      if (issuerNamespace.some((item) => item.digestId === digestId)) {
+        throw new MdlError(`Generated digest ID ${digestId} is already used in namespace '${namespace}'`)
+      }
+
+      issuerNamespace.push(
+        IssuerSignedItem.fromOptions({
+          digestId,
+          random: this.ctx.crypto.random(32),
+          elementIdentifier,
+          elementValue,
+        })
+      )
+    }
 
     this.namespaces.setIssuerNamespace(namespace, issuerNamespace)
 
@@ -104,6 +125,18 @@ export class IssuerSignedBuilder {
     const validityInfo =
       options.validityInfo instanceof ValidityInfo ? options.validityInfo : ValidityInfo.create(options.validityInfo)
 
+    if (validityInfo.validFrom.getTime() < validityInfo.signed.getTime()) {
+      throw new InvalidValidityInfoError(
+        `validFrom (${validityInfo.validFrom.toISOString()}) must be equal to or later than signed (${validityInfo.signed.toISOString()})`
+      )
+    }
+
+    if (validityInfo.validUntil.getTime() <= validityInfo.validFrom.getTime()) {
+      throw new InvalidValidityInfoError(
+        `validUntil (${validityInfo.validUntil.toISOString()}) must be later than validFrom (${validityInfo.validFrom.toISOString()})`
+      )
+    }
+
     const deviceKeyInfo =
       options.deviceKeyInfo instanceof DeviceKeyInfo
         ? options.deviceKeyInfo
@@ -136,7 +169,7 @@ export class IssuerSignedBuilder {
     })
 
     const unprotectedHeaders = UnprotectedHeaders.create({
-      unprotectedHeaders: new Map([[RegisteredCwtHeaderClaimKey.X5Chain, options.certificates]]),
+      unprotectedHeaders: new Map([[RegisteredCwtHeaderClaimKey.X5Chain, x5chainHeaderValue(options.certificates)]]),
     })
 
     if (options.signingKey.keyId) {

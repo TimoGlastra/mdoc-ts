@@ -30,13 +30,14 @@ export class ReaderAuthentication extends CborStructure<
     return z.codec(readerAuthenticationEncodedSchema, readerAuthenticationDecodedSchema, {
       decode: ([, sessionTranscript, itemsRequestDataItem]) => ({
         sessionTranscript: SessionTranscript.fromEncodedStructure(sessionTranscript),
-        itemsRequest: ItemsRequest.fromEncodedStructure(itemsRequestDataItem.data),
+        itemsRequest: ItemsRequest.fromDataItem(itemsRequestDataItem),
       }),
       encode: ({ sessionTranscript, itemsRequest }) =>
         [
           'ReaderAuthentication',
           sessionTranscript.encodedStructure,
-          DataItem.fromData(itemsRequest.encodedStructure),
+          // `ItemsRequestBytes` are signed as the mdoc reader sent them (18013-5 8.1).
+          itemsRequest.asDataItem,
         ] satisfies ReaderAuthenticationEncodedStructure,
     })
   }

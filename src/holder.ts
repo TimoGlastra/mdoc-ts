@@ -16,6 +16,7 @@ import {
   type HolderDeviceRequestMatchResult,
   matchCredentialsToDeviceRequest,
 } from './utils/matchDeviceRequest'
+import { verifyVersion } from './utils/version'
 
 export class Holder {
   /**
@@ -76,12 +77,11 @@ export class Holder {
         ? options.deviceRequest
         : DeviceRequest.decode(options.deviceRequest)
 
-    const sessionTranscript =
-      options.sessionTranscript instanceof SessionTranscript
-        ? options.sessionTranscript
-        : SessionTranscript.decode(options.sessionTranscript)
+    const sessionTranscript = SessionTranscript.from(options.sessionTranscript)
 
-    verifyAgeOverRequestLimit(deviceRequest, options.verificationCallback ?? defaultVerificationCallback)
+    const onCheck = options.verificationCallback ?? defaultVerificationCallback
+    verifyVersion({ structure: 'Device Request', version: deviceRequest.version }, onCheck)
+    verifyAgeOverRequestLimit(deviceRequest, onCheck)
 
     for (const docRequest of deviceRequest.docRequests) {
       await docRequest.readerAuth?.verify(

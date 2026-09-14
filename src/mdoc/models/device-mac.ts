@@ -46,12 +46,10 @@ export class DeviceMac extends Mac0 {
     return await ctx.crypto.hdkf({
       privateKey: options.privateKey.privateKey,
       publicKey: options.publicKey.publicKey,
+      // 18013-5 9.1.3.5: the salt is SHA-256(SessionTranscriptBytes), so the transcript tagged with tag 24.
       salt: await ctx.crypto.digest({
         digestAlgorithm: 'SHA-256',
-        bytes:
-          options.sessionTranscript instanceof SessionTranscript
-            ? options.sessionTranscript.encode({ asDataItem: true })
-            : options.sessionTranscript,
+        bytes: SessionTranscript.from(options.sessionTranscript).encode({ asDataItem: true }),
       }),
       info: stringToBytes(options.info ?? 'EMacKey'),
     })

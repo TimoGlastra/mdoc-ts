@@ -35,14 +35,15 @@ export class DeviceAuthentication extends CborStructure<
       decode: ([, sessionTranscript, docType, deviceNamespacesDataItem]) => ({
         sessionTranscript: SessionTranscript.fromEncodedStructure(sessionTranscript),
         docType,
-        deviceNamespaces: DeviceNamespaces.fromEncodedStructure(deviceNamespacesDataItem.data),
+        deviceNamespaces: DeviceNamespaces.fromDataItem(deviceNamespacesDataItem),
       }),
       encode: ({ sessionTranscript, docType, deviceNamespaces }) =>
         [
           'DeviceAuthentication',
           sessionTranscript.encodedStructure,
           docType,
-          DataItem.fromData(deviceNamespaces.encodedStructure),
+          // `DeviceNameSpacesBytes` are authenticated as the mdoc sent them (18013-5 8.1).
+          deviceNamespaces.asDataItem,
         ] satisfies DeviceAuthenticationEncodedStructure,
     })
   }
@@ -60,13 +61,8 @@ export class DeviceAuthentication extends CborStructure<
   }
 
   public static create(options: DeviceAuthenticationOptions): DeviceAuthentication {
-    const sessionTranscript =
-      options.sessionTranscript instanceof SessionTranscript
-        ? options.sessionTranscript
-        : SessionTranscript.decode(options.sessionTranscript)
-
     return this.fromDecodedStructure({
-      sessionTranscript,
+      sessionTranscript: SessionTranscript.from(options.sessionTranscript),
       docType: options.docType,
       deviceNamespaces: options.deviceNamespaces,
     })

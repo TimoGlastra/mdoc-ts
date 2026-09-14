@@ -232,6 +232,23 @@ describe('document docType (18013-5 9.3.1)', () => {
   })
 })
 
+describe('response version (18013-5 8.1)', () => {
+  const versionCheck = 'Device Response must have a supported version'
+
+  test.each([
+    ['1.0', 'PASSED'],
+    ['1.1', 'PASSED'],
+    ['2.0', 'FAILED'],
+    ['1', 'FAILED'],
+  ])('version %s %s', async (version, status) => {
+    const disclosed = await createDeviceResponse({ issuerSigned: await createIssuerSigned() })
+    const deviceResponse = DeviceResponse.createSimple({ version, documents: disclosed.documents })
+
+    const check = (await collectChecks(deviceResponse)).find((c) => c.check === versionCheck)
+    expect(check?.status).toBe(status)
+  })
+})
+
 describe('response status (18013-5 8.3.2.1.2.3, Table 8)', () => {
   const statusCheck = 'Device Response must not include documents when the status is not 0.'
 

@@ -1,7 +1,7 @@
 import { MediaTypes, StatusList, StatusListCwt, StatusListInfo, StatusType } from '@owf/token-status-list'
 import { X509Certificate } from '@peculiar/x509'
 import nock from 'nock'
-import { expect, suite, test } from 'vitest'
+import { expect, suite, test, vi } from 'vitest'
 import z from 'zod'
 import {
   CoseKey,
@@ -171,7 +171,7 @@ suite('Verification', () => {
     ] = result.documents
     expect(document).toBeDefined()
     expect(trustedIssuanceChain).toHaveLength(1)
-    expect(trustedIssuanceChain[0]).toEqual(new Uint8Array(new X509Certificate(ISSUER_CERTIFICATE).rawData))
+    expect(trustedIssuanceChain?.[0]).toEqual(new Uint8Array(new X509Certificate(ISSUER_CERTIFICATE).rawData))
     expect(statusList).toBeUndefined()
     expect(trustedStatusListChain).toBeUndefined()
     expect(identifierList).toBeUndefined()
@@ -562,6 +562,90 @@ suite('Verification', () => {
     await expect(verifyIssuerSigned(credential)).resolves.toBeDefined()
   })
 
+  // A fetch that records the URIs it is asked for, so a test can assert no revocation list was requested.
+  const recordingContext = () => {
+    const requestedUris: string[] = []
+    const ctx = {
+      ...mdocContext,
+      fetch: (async (input: Parameters<typeof fetch>[0]) => {
+        requestedUris.push(String(input))
+        throw new Error('The revocation list must not be fetched')
+      }) as typeof fetch,
+    }
+    return { ctx, requestedUris }
+  }
+
+  test('Verify mdoc with a status list does not fetch the list without trusted status certificates', async () => {
+    const credential = await issueMdocWithStatus({
+      statusList: { idx: 3, uri: 'https://example.org/status-list/no-trusted-status-certificates' },
+    })
+    const { ctx, requestedUris } = recordingContext()
+
+    await expect(
+      Holder.verifyIssuerSigned({ issuerSigned: credential, trustedCertificates: emptyStatusTrustedCertificates }, ctx)
+    ).rejects.toThrow('Atleast one certificate is required to check the status of the mdoc')
+    expect(requestedUris).toEqual([])
+  })
+
+  test('Verify mdoc with a status list does not fetch the list when the issuer signature is invalid', async () => {
+    const credential = await issueMdocWithStatus({
+      statusList: { idx: 3, uri: 'https://example.org/status-list/forged-mso' },
+    })
+    const { ctx, requestedUris } = recordingContext()
+    const verificationCallback = vi.fn()
+
+    await Holder.verifyIssuerSigned(
+      { issuerSigned: credential, trustedCertificates: validTrustedCertificates, verificationCallback },
+      { ...ctx, cose: { ...ctx.cose, sign1: { ...ctx.cose.sign1, verify: async () => false } } }
+    )
+
+    expect(requestedUris).toEqual([])
+    expect(verificationCallback).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'FAILED', check: 'Issuer auth signature is invalid' })
+    )
+  })
+
+  // Disabling certificate chain validation also applies to the signer of a revocation list, but the
+  // revocation status itself is still checked.
+  const verifyWithoutChainValidation = (credential: IssuerSigned) =>
+    Holder.verifyIssuerSigned(
+      { issuerSigned: credential, trustedCertificates: [], disableCertificateChainValidation: true },
+      mdocContext
+    )
+
+  test('Verify mdoc with a status list without certificate chain validation', async () => {
+    const idx = 3
+    const uri = await mockStatusList('/status-list/no-chain-validation', { idx })
+
+    const credential = await issueMdocWithStatus({ statusList: { idx, uri } })
+
+    const { statusList, trustedStatusListChain } = await verifyWithoutChainValidation(credential)
+    expect(statusList).toBeDefined()
+    expect(trustedStatusListChain).toBeUndefined()
+  })
+
+  test('Verify mdoc with a revoked entry in a status list without certificate chain validation', async () => {
+    const idx = 3
+    const uri = await mockStatusList('/status-list/no-chain-validation-revoked', { idx, status: StatusType.Invalid })
+
+    const credential = await issueMdocWithStatus({ statusList: { idx, uri } })
+
+    await expect(verifyWithoutChainValidation(credential)).rejects.toThrow(
+      `Status for id '${idx}' is not Valid (0), but is instead '1'`
+    )
+  })
+
+  test('Verify mdoc with an identifier list that carries its identifier without certificate chain validation', async () => {
+    const id = new Uint8Array([0xab, 0xcd])
+    const uri = await mockIdentifierList('/identifier-list/no-chain-validation-revoked', { identifiers: [id] })
+
+    const credential = await issueMdocWithStatus({ identifierList: { id, uri } })
+
+    await expect(verifyWithoutChainValidation(credential)).rejects.toThrow(
+      `Identifier abcd found in the revoked identifier list at '${uri}'`
+    )
+  })
+
   test('Verify mdoc with an identifier list that carries its identifier', async () => {
     const id = new Uint8Array([0xab, 0xcd])
     const uri = await mockIdentifierList('/identifier-list/revoked', { identifiers: [id] })
@@ -748,7 +832,7 @@ suite('Verification', () => {
     ] = result.documents
     expect(document).toBeDefined()
     expect(trustedIssuanceChain).toHaveLength(1)
-    expect(trustedIssuanceChain[0]).toEqual(new Uint8Array(new X509Certificate(ISSUER_CERTIFICATE).rawData))
+    expect(trustedIssuanceChain?.[0]).toEqual(new Uint8Array(new X509Certificate(ISSUER_CERTIFICATE).rawData))
     expect(trustedStatusListChain?.[0]).toEqual(new Uint8Array(new X509Certificate(ISSUER_CERTIFICATE).rawData))
     expect(resultStatusList).toBeDefined()
     expect(identifierList).toBeUndefined()

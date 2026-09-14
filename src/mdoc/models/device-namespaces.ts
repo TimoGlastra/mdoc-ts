@@ -1,5 +1,7 @@
-import { CborStructure } from '@owf/cose'
 import { z } from 'zod'
+import { OriginalBytesCborStructure } from '../original-bytes-cbor-structure'
+import type { DataElementIdentifier } from './data-element-identifier'
+import type { DataElementValue } from './data-element-value'
 import { DeviceSignedItems, type DeviceSignedItemsStructure, deviceSignedItemsSchema } from './device-signed-items'
 import type { Namespace } from './namespace'
 
@@ -13,7 +15,7 @@ export type DeviceNamespacesOptions = {
   deviceNamespaces: Map<Namespace, DeviceSignedItems>
 }
 
-export class DeviceNamespaces extends CborStructure<
+export class DeviceNamespaces extends OriginalBytesCborStructure<
   DeviceNamespacesEncodedStructure,
   DeviceNamespacesDecodedStructure
 > {
@@ -36,8 +38,42 @@ export class DeviceNamespaces extends CborStructure<
     })
   }
 
+  /**
+   * The device namespaces. Call {@link markModified} after changing them in place, or use
+   * {@link setDeviceNamespace} and {@link setDeviceSignedElement}.
+   */
   public get deviceNamespaces() {
     return this.structure
+  }
+
+  public getDeviceNamespace(namespace: Namespace) {
+    return this.structure.get(namespace)
+  }
+
+  public setDeviceNamespace(namespace: Namespace, deviceSignedItems: DeviceSignedItems) {
+    this.structure.set(namespace, deviceSignedItems)
+    this.markModified()
+  }
+
+  /**
+   * Sets an element in a namespace, and adds the namespace if it is not there yet.
+   */
+  public setDeviceSignedElement(
+    namespace: Namespace,
+    elementIdentifier: DataElementIdentifier,
+    elementValue: DataElementValue
+  ) {
+    const deviceSignedItems = this.structure.get(namespace)
+
+    if (deviceSignedItems) {
+      deviceSignedItems.deviceSignedItems.set(elementIdentifier, elementValue)
+      this.markModified()
+    } else {
+      this.setDeviceNamespace(
+        namespace,
+        DeviceSignedItems.create({ deviceSignedItems: new Map([[elementIdentifier, elementValue]]) })
+      )
+    }
   }
 
   public static create(options: DeviceNamespacesOptions): DeviceNamespaces {

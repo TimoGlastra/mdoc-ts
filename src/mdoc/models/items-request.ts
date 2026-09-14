@@ -1,7 +1,8 @@
-import { CborStructure, typedMap } from '@owf/cose'
+import { typedMap } from '@owf/cose'
 import { z } from 'zod'
 import { describeAgeOverLimitViolations, findAgeOverRequestLimitViolations } from '../../utils/ageOver'
 import { AgeOverLimitExceededError } from '../errors'
+import { OriginalBytesCborStructure } from '../original-bytes-cbor-structure'
 import type { DataElementIdentifier } from './data-element-identifier'
 import type { DocType } from './doctype'
 import type { IntentToRetain } from './intent-to-retain'
@@ -28,7 +29,10 @@ export type ItemsRequestOptions = {
     | Record<Namespace, Record<DataElementIdentifier, IntentToRetain>>
 }
 
-export class ItemsRequest extends CborStructure<ItemsRequestEncodedStructure, ItemsRequestDecodedStructure> {
+export class ItemsRequest extends OriginalBytesCborStructure<
+  ItemsRequestEncodedStructure,
+  ItemsRequestDecodedStructure
+> {
   public static override get encodingSchema() {
     return itemsRequestSchema
   }

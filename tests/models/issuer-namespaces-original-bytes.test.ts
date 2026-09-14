@@ -63,7 +63,7 @@ describe('IssuerNamespaces presentation encoding', () => {
 
     // Re-encoding from the decoded structure really does differ, so this is not vacuous:
     // digestID 0x19 0x00 0x00 collapses to 0x00 and the digest stops matching valueDigests.
-    expect(hex.encode(item.encode({ asDataItem: true }))).not.toEqual(
+    expect(hex.encode(cborEncode(DataItem.fromData(item.encodedStructure)))).not.toEqual(
       hex.encode(cborEncode(DataItem.fromBuffer(payload)))
     )
 

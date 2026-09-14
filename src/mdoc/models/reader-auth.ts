@@ -37,18 +37,27 @@ export class ReaderAuth extends Sign1 {
 
     const onCheck = onCategoryCheck(verificationCallback, 'READER_AUTH')
 
-    const isValid = await this.verifySignature(
-      {
-        key: await ctx.x509.getPublicKey({ certificate: this.certificate, algorithm: this.algorithm }),
-        detachedPayload: readerAuthentication.encode({ asDataItem: true }),
-      },
-      { verify: ctx.cose.sign1.verify }
-    )
+    let isValid: boolean
+    let reason: string | undefined
+    try {
+      // `certificate` throws when the reader auth has no x5chain, which is required (18013-5 9.1.4).
+      isValid = await this.verifySignature(
+        {
+          key: await ctx.x509.getPublicKey({ certificate: this.certificate, algorithm: this.algorithm }),
+          detachedPayload: readerAuthentication.encode({ asDataItem: true }),
+        },
+        { verify: ctx.cose.sign1.verify }
+      )
+      reason = isValid ? undefined : 'Signature is invalid on the reader auth'
+    } catch (error) {
+      isValid = false
+      reason = `Unable to verify the reader auth signature: ${error instanceof Error ? error.message : 'Unknown error'}`
+    }
 
     onCheck({
       status: isValid ? 'PASSED' : 'FAILED',
-      check: 'Signature is invalid on the reader auth',
-      reason: 'Signature is invalid on the reader auth',
+      check: 'Reader auth signature must be valid',
+      reason,
     })
 
     if (!options.disableCertificateChainValidation) {

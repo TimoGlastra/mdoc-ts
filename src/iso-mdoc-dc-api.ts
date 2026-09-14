@@ -24,6 +24,7 @@ import {
   InvalidDcApiRequestError,
   InvalidDcApiResponseError,
   InvalidEncryptionInfoError,
+  InvalidOriginError,
   ItemsRequest,
   MissingOriginError,
   ReaderAuth,
@@ -33,6 +34,8 @@ import {
 } from './mdoc'
 import { verifyAgeOverRequestLimit } from './utils/ageOver'
 import type { DeviceRequestMatchOptions } from './utils/matchDeviceRequest'
+import { verifyVersion } from './utils/version'
+import { x5chainHeaderValue } from './utils/x5chain'
 
 /**
  * DC API protocol identifier for ISO/IEC TS 18013-7:2025 Annex C.
@@ -151,6 +154,7 @@ export class IsoMdocDcApi {
       throw new InvalidEncryptionInfoError(`Nonce must be at least ${minimumNonceLength} bytes`)
     }
     assertP256PublicKey(options.recipientPublicKey)
+    if (options.readerAuth) assertSerializedOrigin(options.readerAuth.origin)
 
     const encryptionInfo = EncryptionInfo.create({
       encryptionParameters: EncryptionParameters.create({ nonce, recipientPublicKey: options.recipientPublicKey }),
@@ -173,7 +177,7 @@ export class IsoMdocDcApi {
 
         const { signingKey, certificateChain } = options.readerAuth
         const unprotectedHeaders = UnprotectedHeaders.create({})
-        unprotectedHeaders.headers?.set(RegisteredCwtHeaderClaimKey.X5Chain, certificateChain)
+        unprotectedHeaders.headers?.set(RegisteredCwtHeaderClaimKey.X5Chain, x5chainHeaderValue(certificateChain))
 
         const readerAuth = (await ReaderAuth.create({
           protectedHeaders: ProtectedHeaders.create({
@@ -234,20 +238,31 @@ export class IsoMdocDcApi {
   ): Promise<IsoMdocDcApiParsedRequest> {
     const { origin } = options
     if (!origin) throw new MissingOriginError('No origin was provided by the DC API')
+    assertSerializedOrigin(origin)
 
     // The request is handed to us by the platform, so validate its shape before decoding anything.
     const request = parseOrThrow(isoMdocDcApiRequestSchema, options.request, InvalidDcApiRequestError, 'DC API request')
 
     const encryptionInfoBase64Url = request.encryptionInfo
-    const encryptionInfo = EncryptionInfo.fromBase64Url(encryptionInfoBase64Url)
+    const encryptionInfo = decodeOrThrow(
+      () => EncryptionInfo.fromBase64Url(encryptionInfoBase64Url),
+      InvalidDcApiRequestError,
+      'encryption info'
+    )
 
     if (encryptionInfo.nonce.length < minimumNonceLength) {
       throw new InvalidEncryptionInfoError(`Nonce must be at least ${minimumNonceLength} bytes`)
     }
     assertP256PublicKey(encryptionInfo.recipientPublicKey)
 
-    const deviceRequest = DeviceRequest.decode(base64url.decode(request.deviceRequest))
-    verifyAgeOverRequestLimit(deviceRequest, options.verificationCallback ?? defaultVerificationCallback)
+    const deviceRequest = decodeOrThrow(
+      () => DeviceRequest.decode(base64url.decode(request.deviceRequest)),
+      InvalidDcApiRequestError,
+      'device request'
+    )
+    const onCheck = options.verificationCallback ?? defaultVerificationCallback
+    verifyVersion({ structure: 'Device Request', version: deviceRequest.version }, onCheck)
+    verifyAgeOverRequestLimit(deviceRequest, onCheck)
 
     const sessionTranscript = await SessionTranscript.forIsoMdocDcApi({ encryptionInfoBase64Url, origin }, ctx)
 
@@ -368,6 +383,7 @@ export class IsoMdocDcApi {
   ): Promise<{ deviceResponse: DeviceResponse; sessionTranscript: SessionTranscript }> {
     const hpke = assertHpke(ctx)
     if (!options.origin) throw new MissingOriginError('No origin was provided by the DC API')
+    assertSerializedOrigin(options.origin)
 
     // The response comes from the wallet, so validate its shape before decoding anything.
     const response = parseOrThrow(
@@ -377,7 +393,11 @@ export class IsoMdocDcApi {
       'DC API response'
     )
 
-    const encryptedResponse = EncryptedResponse.fromBase64Url(response)
+    const encryptedResponse = decodeOrThrow(
+      () => EncryptedResponse.fromBase64Url(response),
+      InvalidDcApiResponseError,
+      'encrypted response'
+    )
 
     const sessionTranscript = await SessionTranscript.forIsoMdocDcApi(
       { encryptionInfoBase64Url: options.encryptionInfo, origin: options.origin },
@@ -392,7 +412,13 @@ export class IsoMdocDcApi {
       ciphertext: encryptedResponse.ciphertext,
     })
 
-    return { deviceResponse: DeviceResponse.decode(plaintext), sessionTranscript }
+    const deviceResponse = decodeOrThrow(
+      () => DeviceResponse.decode(plaintext),
+      InvalidDcApiResponseError,
+      'device response'
+    )
+
+    return { deviceResponse, sessionTranscript }
   }
 
   /**
@@ -455,6 +481,43 @@ function assertHpke(ctx: Pick<MdocContext, 'crypto'>) {
 function assertP256PublicKey(coseKey: CoseKey) {
   if (coseKey.keyType !== KeyType.Ec || coseKey.curve !== Curve['P-256']) {
     throw new InvalidEncryptionInfoError('Recipient public key must be an EC P-256 key')
+  }
+}
+
+/**
+ * The origin must be an ASCII serialized origin, as the DC API provides it (C.5), for instance
+ * `https://verifier.example.com`. The session transcript binds the exact string, so for instance a
+ * trailing slash would silently produce a transcript the other party does not compute.
+ */
+function assertSerializedOrigin(origin: string) {
+  let serializedOrigin: string | undefined
+  try {
+    serializedOrigin = new URL(origin).origin
+  } catch {
+    serializedOrigin = undefined
+  }
+
+  if (serializedOrigin === undefined || serializedOrigin === 'null' || serializedOrigin !== origin) {
+    throw new InvalidOriginError(
+      serializedOrigin && serializedOrigin !== 'null'
+        ? `Origin '${origin}' is not a serialized origin, did you mean '${serializedOrigin}'?`
+        : `Origin '${origin}' is not a serialized origin`
+    )
+  }
+}
+
+/**
+ * Decode untrusted CBOR, surfacing a decoding failure as the DC API error for that payload.
+ */
+function decodeOrThrow<Decoded>(
+  decode: () => Decoded,
+  ErrorClass: new (message: string) => Error,
+  description: string
+): Decoded {
+  try {
+    return decode()
+  } catch (error) {
+    throw new ErrorClass(`Invalid ${description}: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
