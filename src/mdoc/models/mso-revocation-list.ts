@@ -13,6 +13,7 @@ import {
   JwtNotSupportForStatusListError,
   type MdlError,
   NoPublicKeySetOnStatusListError,
+  TrustedRevocationCertificatesMustContainAtleastOneCertificateError,
   UnableToExtractX5ChainFromCwtError,
   UnableToExtractX5ChainFromIdentifierListError,
 } from '../errors'
@@ -39,8 +40,27 @@ async function asMdlRevocationListError(
 }
 
 /**
+ * The trust anchors a revocation list signer is validated against. Also checked before the list is
+ * fetched, so that a verification that cannot succeed does not request the URI in the MSO.
+ */
+function assertTrustedCertificates({
+  trustedCertificates,
+}: {
+  trustedCertificates?: Array<Uint8Array>
+}): Array<Uint8Array> {
+  if (!trustedCertificates || trustedCertificates.length === 0) {
+    throw new TrustedRevocationCertificatesMustContainAtleastOneCertificateError(
+      'Atleast one certificate is required to check the status of the mdoc. Make sure to supply them in the `trustedStatusCertificates` option'
+    )
+  }
+
+  return trustedCertificates
+}
+
+/**
  * Establishes the signer of a revocation list: the certificate chain it carries, validated against
- * the mdoc trust anchors, and the public key of its leaf.
+ * the mdoc trust anchors unless certificate chain validation is disabled, and the public key of its
+ * leaf.
  *
  * § 12.3.6.3 requires the chain to travel in the protected header of the CWT: "The CWT shall
  * contain the x5chain in the protected header that contains the certificate or chain of
@@ -51,16 +71,25 @@ async function verifyRevocationListSigner(
     x5chain,
     algorithm,
     trustedCertificates,
+    disableCertificateChainValidation,
     now,
   }: {
     x5chain: Array<Uint8Array>
     algorithm?: SignatureAlgorithm
-    trustedCertificates: Array<Uint8Array>
+    trustedCertificates?: Array<Uint8Array>
+    disableCertificateChainValidation?: boolean
     now: Date
   },
   ctx: Pick<MdocContext, 'x509'>
 ) {
-  const { chain } = await ctx.x509.verifyCertificateChain({ trustedCertificates, x5chain, now })
+  let chain: Array<Uint8Array> | undefined
+  if (!disableCertificateChainValidation) {
+    ;({ chain } = await ctx.x509.verifyCertificateChain({
+      trustedCertificates: assertTrustedCertificates({ trustedCertificates }),
+      x5chain,
+      now,
+    }))
+  }
 
   const key = await ctx.x509.getPublicKey({ certificate: x5chain[0], algorithm })
   if (!key) {
@@ -72,7 +101,15 @@ async function verifyRevocationListSigner(
 
 export type VerifyStatusListTokenOptions = {
   statusListInfo: Pick<StatusListInfo, 'uri' | 'idx'>
-  trustedCertificates: Array<Uint8Array>
+  /**
+   * Trust anchors for the certificate chain of the list signer. Required unless
+   * `disableCertificateChainValidation` is set.
+   */
+  trustedCertificates?: Array<Uint8Array>
+  /**
+   * Verify the list with the key of the leaf of its x5chain, without validating the chain.
+   */
+  disableCertificateChainValidation?: boolean
   now?: Date
   skewSeconds?: number
   checkFreshness?: boolean
@@ -80,8 +117,8 @@ export type VerifyStatusListTokenOptions = {
 
 export type VerifyStatusListTokenResult = {
   statusListCwt: StatusListCwt
-  /** The validated certificate chain of the list signer, leaf first. */
-  chain: Array<Uint8Array>
+  /** The validated certificate chain of the list signer, leaf first. Not set without chain validation. */
+  chain?: Array<Uint8Array>
 }
 
 /**
@@ -98,9 +135,18 @@ export type VerifyStatusListTokenResult = {
  * structure is a CWT", so a list served as a JWT is rejected rather than verified.
  */
 export async function verifyStatusListToken(
-  { statusListInfo, trustedCertificates, now = new Date(), skewSeconds, checkFreshness }: VerifyStatusListTokenOptions,
+  {
+    statusListInfo,
+    trustedCertificates,
+    disableCertificateChainValidation,
+    now = new Date(),
+    skewSeconds,
+    checkFreshness,
+  }: VerifyStatusListTokenOptions,
   ctx: Pick<MdocContext, 'fetch' | 'x509' | 'cose'>
 ): Promise<VerifyStatusListTokenResult> {
+  if (!disableCertificateChainValidation) assertTrustedCertificates({ trustedCertificates })
+
   const { uri, idx } = statusListInfo
   const token = await fetchStatusList({ uri, customFetcher: ctx.fetch, acceptedFormats: ['cwt'] })
 
@@ -120,7 +166,13 @@ export async function verifyStatusListToken(
   }
 
   const { chain, key } = await verifyRevocationListSigner(
-    { x5chain, algorithm: statusListCwt.algorithm as SignatureAlgorithm | undefined, trustedCertificates, now },
+    {
+      x5chain,
+      algorithm: statusListCwt.algorithm as SignatureAlgorithm | undefined,
+      trustedCertificates,
+      disableCertificateChainValidation,
+      now,
+    },
     ctx
   )
 
@@ -150,7 +202,15 @@ export async function verifyStatusListToken(
 
 export type VerifyIdentifierListTokenOptions = {
   identifierListInfo: Pick<IdentifierListInfo, 'uri' | 'id'>
-  trustedCertificates: Array<Uint8Array>
+  /**
+   * Trust anchors for the certificate chain of the list signer. Required unless
+   * `disableCertificateChainValidation` is set.
+   */
+  trustedCertificates?: Array<Uint8Array>
+  /**
+   * Verify the list with the key of the leaf of its x5chain, without validating the chain.
+   */
+  disableCertificateChainValidation?: boolean
   now?: Date
   skewSeconds?: number
   checkFreshness?: boolean
@@ -158,8 +218,8 @@ export type VerifyIdentifierListTokenOptions = {
 
 export type VerifyIdentifierListTokenResult = {
   identifierListCwt: IdentifierListCwt
-  /** The validated certificate chain of the list signer, leaf first. */
-  chain: Array<Uint8Array>
+  /** The validated certificate chain of the list signer, leaf first. Not set without chain validation. */
+  chain?: Array<Uint8Array>
 }
 
 /**
@@ -176,12 +236,15 @@ export async function verifyIdentifierListToken(
   {
     identifierListInfo,
     trustedCertificates,
+    disableCertificateChainValidation,
     now = new Date(),
     skewSeconds,
     checkFreshness,
   }: VerifyIdentifierListTokenOptions,
   ctx: Pick<MdocContext, 'fetch' | 'x509' | 'cose'>
 ): Promise<VerifyIdentifierListTokenResult> {
+  if (!disableCertificateChainValidation) assertTrustedCertificates({ trustedCertificates })
+
   const { uri, id } = identifierListInfo
   const identifierListCwt = await IdentifierListCwt.fetch(uri, ctx)
 
@@ -191,7 +254,13 @@ export async function verifyIdentifierListToken(
   }
 
   const { chain, key } = await verifyRevocationListSigner(
-    { x5chain, algorithm: identifierListCwt.algorithm as SignatureAlgorithm | undefined, trustedCertificates, now },
+    {
+      x5chain,
+      algorithm: identifierListCwt.algorithm as SignatureAlgorithm | undefined,
+      trustedCertificates,
+      disableCertificateChainValidation,
+      now,
+    },
     ctx
   )
 

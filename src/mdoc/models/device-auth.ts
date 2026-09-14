@@ -21,7 +21,11 @@ import type { SessionTranscript } from './session-transcript'
 const deviceAuthSchema = typedMap([
   ['deviceSignature', z.instanceof(DeviceSignature).exactOptional()],
   ['deviceMac', z.instanceof(DeviceMac).exactOptional()],
-] as const).refine(
+] as const)
+
+// ISO/IEC 18013-5 9.1.3.4: DeviceAuth = { "deviceSignature" : DeviceSignature // "deviceMac" : DeviceMac }
+// The refinement is applied to the decoded schema, as both decoding and `fromDecodedStructure` validate against it.
+const deviceAuthDecodedSchema = deviceAuthSchema.out.refine(
   (map) => [map.get('deviceMac'), map.get('deviceSignature')].filter((i) => i !== undefined).length === 1,
   { error: () => 'deviceAuth must contain either a deviceMac or deviceSignature, but not both or neither' }
 )
@@ -36,7 +40,7 @@ export type DeviceAuthOptions = {
 
 export class DeviceAuth extends CborStructure<DeviceAuthEncodedStructure, DeviceAuthDecodedStructure> {
   public static override get encodingSchema() {
-    return z.codec(deviceAuthSchema.in, deviceAuthSchema.out, {
+    return z.codec(deviceAuthSchema.in, deviceAuthDecodedSchema, {
       decode: (input) => {
         const map: DeviceAuthDecodedStructure = TypedMap.fromMap(input)
 
@@ -94,11 +98,13 @@ export class DeviceAuth extends CborStructure<DeviceAuthEncodedStructure, Device
     const deviceMac = this.structure.get('deviceMac')
     const deviceSignature = this.structure.get('deviceSignature')
 
-    if (!deviceMac && !deviceSignature) {
-      onCheck({
-        status: 'FAILED',
-        check: 'Device Auth must contain a deviceSignature or deviceMac element',
-      })
+    // The schema already enforces this, but a signature must never be accepted while a MAC is also present
+    const hasExactlyOneAuthentication = (deviceSignature === undefined) !== (deviceMac === undefined)
+    onCheck({
+      status: hasExactlyOneAuthentication ? 'PASSED' : 'FAILED',
+      check: 'Device Auth must contain either a deviceSignature or deviceMac element, but not both',
+    })
+    if (!hasExactlyOneAuthentication) {
       return
     }
 
@@ -129,7 +135,6 @@ export class DeviceAuth extends CborStructure<DeviceAuthEncodedStructure, Device
       }
       return
     }
-
     if (deviceMac) {
       if (deviceMac.algorithm !== MacAlgorithm.HS256) {
         onCheck({
@@ -172,12 +177,6 @@ export class DeviceAuth extends CborStructure<DeviceAuthEncodedStructure, Device
         })
       }
     }
-
-    onCheck({
-      status: 'FAILED',
-      check: 'No Device Signature or Device Mac found on Device Auth',
-      reason: 'No Device Signature or Device Mac found on Device Auth',
-    })
   }
 
   /**

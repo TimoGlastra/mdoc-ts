@@ -1,7 +1,7 @@
-import { CborStructure, DataItem, TypedMap, typedMap } from '@owf/cose'
+import { CborStructure, TypedMap, typedMap } from '@owf/cose'
 import { z } from 'zod'
 import { DeviceAuth, type DeviceAuthEncodedStructure } from './device-auth'
-import { DeviceNamespaces, type DeviceNamespacesEncodedStructure } from './device-namespaces'
+import { DeviceNamespaces } from './device-namespaces'
 
 const deviceSignedSchema = typedMap([
   ['nameSpaces', z.instanceof(DeviceNamespaces)],
@@ -22,18 +22,15 @@ export class DeviceSigned extends CborStructure<DeviceSignedEncodedStructure, De
       decode: (input) => {
         const map: DeviceSignedDecodedStructure = TypedMap.fromMap(input)
 
-        const nameSpaces = input.get('nameSpaces') as DataItem
-        map.set(
-          'nameSpaces',
-          DeviceNamespaces.fromEncodedStructure(nameSpaces.data as DeviceNamespacesEncodedStructure)
-        )
+        map.set('nameSpaces', DeviceNamespaces.fromDataItem(input.get('nameSpaces')))
         map.set('deviceAuth', DeviceAuth.fromEncodedStructure(input.get('deviceAuth') as DeviceAuthEncodedStructure))
 
         return map
       },
       encode: (output) => {
         const map = output.toMap() as Map<unknown, unknown>
-        map.set('nameSpaces', DataItem.fromData(output.get('nameSpaces').encodedStructure))
+        // `DeviceNameSpacesBytes` are embedded as received, as device authentication covers them.
+        map.set('nameSpaces', output.get('nameSpaces').asDataItem)
         map.set('deviceAuth', output.get('deviceAuth').encodedStructure)
 
         return map

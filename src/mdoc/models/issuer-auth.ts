@@ -12,7 +12,6 @@ import type { StatusListCwt } from '@owf/token-status-list'
 import z from 'zod'
 import type { MdocContext } from '../../context.js'
 import { defaultVerificationCallback, onCategoryCheck, type VerificationCallback } from '../check-callback.js'
-import { TrustedRevocationCertificatesMustContainAtleastOneCertificateError } from '../errors.js'
 import type { IdentifierListCwt } from './identifier-list-cwt'
 import { MobileSecurityObject, type MobileSecurityObjectEncodedStructure } from './mobile-security-object.js'
 import { verifyIdentifierListToken, verifyStatusListToken } from './mso-revocation-list'
@@ -23,7 +22,11 @@ export type IssuerAuthOptions = Omit<Sign1Options, 'payload'> & {
 }
 
 export type IssuerAuthVerificationResult = {
-  trustedIssuanceChain: Uint8Array[]
+  /**
+   * The certificate chain of the document signer up to a trusted certificate. Undefined when
+   * certificate chain validation is disabled, or when it failed and the verification callback did not throw.
+   */
+  trustedIssuanceChain?: Uint8Array[]
   statusList?: StatusListCwt
   trustedStatusListChain?: Uint8Array[]
   identifierList?: IdentifierListCwt
@@ -63,22 +66,20 @@ export class IssuerAuth extends Sign1 {
     return mso
   }
 
+  /**
+   * The `countryName` in the subject of the document signer certificate, which `issuing_country` must
+   * match (18013-5 7.2.1).
+   */
   public getIssuingCountry(ctx: Pick<MdocContext, 'x509'>) {
-    const countryName = ctx.x509.getIssuerNameField({
-      certificate: this.certificate,
-      field: 'C',
-    })[0]
-
-    return countryName
+    return ctx.x509.getSubjectNameField({ certificate: this.certificate, field: 'C' })[0]
   }
 
+  /**
+   * The `stateOrProvinceName` in the subject of the document signer certificate, if present, which
+   * `issuing_jurisdiction` must match (18013-5 7.2.1).
+   */
   public getIssuingStateOrProvince(ctx: Pick<MdocContext, 'x509'>) {
-    const stateOrProvince = ctx.x509.getIssuerNameField({
-      certificate: this.certificate,
-      field: 'ST',
-    })[0]
-
-    return stateOrProvince
+    return ctx.x509.getSubjectNameField({ certificate: this.certificate, field: 'ST' })[0]
   }
 
   /**
@@ -93,12 +94,18 @@ export class IssuerAuth extends Sign1 {
       skewSeconds,
       checkFreshness,
       trustedStatusCertificates,
+      disableCertificateChainValidation,
     }: {
       now?: Date
       /** Tolerance applied to the `exp` and `iat` of a revocation list. Defaults to 30 seconds. */
       skewSeconds?: number
       checkFreshness?: boolean
       trustedStatusCertificates?: Uint8Array[]
+      /**
+       * Verify a revocation list with the key of the leaf of its x5chain, without validating its
+       * certificate chain against `trustedStatusCertificates`. The revocation status is still checked.
+       */
+      disableCertificateChainValidation?: boolean
     },
     ctx: Pick<MdocContext, 'fetch' | 'x509' | 'cose'>
   ): Promise<{
@@ -110,17 +117,12 @@ export class IssuerAuth extends Sign1 {
     const status = this.mobileSecurityObject.status
     if (!status || (!status.statusList && !status.identifierList)) return {}
 
-    if (!trustedStatusCertificates || trustedStatusCertificates.length <= 0) {
-      throw new TrustedRevocationCertificatesMustContainAtleastOneCertificateError(
-        'Atleast one certificate is required to check the status of the mdoc. Make sure to supply them in the `trustedStatusCertificates` option'
-      )
-    }
-
     const statusListResult = status.statusList
       ? await verifyStatusListToken(
           {
             statusListInfo: status.statusList,
             trustedCertificates: trustedStatusCertificates,
+            disableCertificateChainValidation,
             now,
             skewSeconds,
             checkFreshness,
@@ -134,6 +136,7 @@ export class IssuerAuth extends Sign1 {
           {
             identifierListInfo: status.identifierList,
             trustedCertificates: trustedStatusCertificates,
+            disableCertificateChainValidation,
             now,
             skewSeconds,
             checkFreshness,
@@ -190,6 +193,8 @@ export class IssuerAuth extends Sign1 {
         })
 
         trustedIssuanceChain = chain
+        // Status information is trusted when it is signed by a status certificate of the trust anchor
+        // the issuance chain ends in.
         trustedStatusCertificates = chain[chain.length - 1]
           ? trustedCertificates.find((tc) => tc.issuance.some((cert) => compareBytes(cert, chain[chain.length - 1])))
               ?.status
@@ -208,11 +213,21 @@ export class IssuerAuth extends Sign1 {
       }
     }
 
+    const publicKey = await ctx.x509.getPublicKey({ certificate: this.certificate, algorithm: this.algorithm })
+    const isSignatureValid = await this.verifySignature({ key: publicKey }, ctx.cose.sign1)
+
+    onCheck({
+      status: isSignatureValid ? 'PASSED' : 'FAILED',
+      check: 'Issuer auth signature is invalid',
+    })
+
     let statusList: StatusListCwt | undefined
     let trustedStatusListChain: Uint8Array[] | undefined
     let identifierList: IdentifierListCwt | undefined
     let trustedIdentifierListChain: Uint8Array[] | undefined
-    if (!disableStatusValidation) {
+    // The revocation list URIs come from the MSO, so they are only fetched once the MSO is known to be
+    // signed by the issuer. A forged MSO must not make the verifier request a URI of its choosing.
+    if (!disableStatusValidation && isSignatureValid) {
       try {
         ;({ statusList, trustedStatusListChain, identifierList, trustedIdentifierListChain } = await this.verifyStatus(
           {
@@ -220,6 +235,9 @@ export class IssuerAuth extends Sign1 {
             skewSeconds,
             checkFreshness: true,
             trustedStatusCertificates,
+            // Without chain validation there is no trust anchor to take the status certificates from,
+            // so the chains of the revocation lists are not validated either.
+            disableCertificateChainValidation,
           },
           ctx
         ))
@@ -231,14 +249,6 @@ export class IssuerAuth extends Sign1 {
         })
       }
     }
-
-    const publicKey = await ctx.x509.getPublicKey({ certificate: this.certificate, algorithm: this.algorithm })
-    const isSignatureValid = await this.verifySignature({ key: publicKey }, ctx.cose.sign1)
-
-    onCheck({
-      status: isSignatureValid ? 'PASSED' : 'FAILED',
-      check: 'Issuer auth signature is invalid',
-    })
 
     const { validityInfo } = this.mobileSecurityObject
 
@@ -261,16 +271,18 @@ export class IssuerAuth extends Sign1 {
       reason: `The MSO must be valid at the time of verification (${now.toUTCString()})`,
     })
 
-    onCheck({
-      status: trustedIssuanceChain ? 'PASSED' : 'FAILED',
-      check:
-        'Unable to determine a trusted issuance chain for the provided trusted certificates and the signer of the issuer auth',
-      reason:
-        'Unable to determine a trusted issuance chain for the provided trusted certificates and the signer of the issuer auth',
-    })
+    if (!disableCertificateChainValidation) {
+      onCheck({
+        status: trustedIssuanceChain ? 'PASSED' : 'FAILED',
+        check:
+          'Unable to determine a trusted issuance chain for the provided trusted certificates and the signer of the issuer auth',
+        reason:
+          'Unable to determine a trusted issuance chain for the provided trusted certificates and the signer of the issuer auth',
+      })
+    }
 
     return {
-      trustedIssuanceChain: trustedIssuanceChain as Uint8Array[],
+      trustedIssuanceChain,
       statusList,
       trustedStatusListChain,
       identifierList,

@@ -1,6 +1,7 @@
 import {
   CborStructure,
   type CoseKey,
+  MacAlgorithm,
   ProtectedHeaders,
   RegisteredCwtHeaderClaimKey,
   TypedMap,
@@ -25,6 +26,7 @@ import {
   reportDeviceRequestMatch,
   validateDeviceRequestMatchOptions,
 } from '../../utils/matchDeviceRequest'
+import { verifyVersion } from '../../utils/version'
 import { defaultVerificationCallback, type VerificationCallback } from '../check-callback'
 import {
   AgeOverLimitExceededError,
@@ -217,12 +219,7 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
       validateDeviceRequestMatchOptions(options.deviceRequest, options.deviceRequestMatchOptions)
     }
 
-    const version = this.structure.get('version')
-    onCheck({
-      status: version ? 'PASSED' : 'FAILED',
-      check: 'Device Response must include "version" element.',
-      category: 'DOCUMENT_FORMAT',
-    })
+    verifyVersion({ structure: 'Device Response', version: this.structure.get('version') }, onCheck)
 
     const documents = this.structure.get('documents')
     onCheck({
@@ -387,15 +384,13 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
       unprotectedHeaders.headers?.set(RegisteredCwtHeaderClaimKey.KeyId, stringToBytes(signingKey.keyId))
     }
 
-    const protectedHeaders = ProtectedHeaders.create({
-      protectedHeaders: new Map([[RegisteredCwtHeaderClaimKey.Algorithm, signingKey.algorithm]]),
-    })
-
     const deviceAuthOptions: DeviceAuthOptions = {}
     if (useSignature) {
       const deviceSignature = await DeviceSignature.create({
         unprotectedHeaders,
-        protectedHeaders,
+        protectedHeaders: ProtectedHeaders.create({
+          protectedHeaders: new Map([[RegisteredCwtHeaderClaimKey.Algorithm, signingKey.algorithm]]),
+        }),
         payload: null,
       }).sign({ signingKey, detachedPayload: deviceAuthenticationBytes }, { sign: ctx.cose.sign1.sign })
 
@@ -404,8 +399,12 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
       const ephemeralKey = options.mac?.ephemeralKey
       if (!ephemeralKey) throw new Error('Ephemeral key is missing')
 
+      // 18013-5 9.1.3.5: the device MAC is always HMAC 256/256, keyed with the EMacKey derived from
+      // the device key, and not with the algorithm of the device key.
       const deviceMac = DeviceMac.create({
-        protectedHeaders,
+        protectedHeaders: ProtectedHeaders.create({
+          protectedHeaders: new Map([[RegisteredCwtHeaderClaimKey.Algorithm, MacAlgorithm.HS256]]),
+        }),
         unprotectedHeaders,
         payload: null,
       })
@@ -419,7 +418,10 @@ export class DeviceResponse extends CborStructure<DeviceResponseEncodedStructure
         ctx
       )
 
-      await deviceMac.authenticate({ key: macKey, detachedPayload: deviceAuthenticationBytes }, ctx.cose.mac0)
+      await deviceMac.authenticate(
+        { key: macKey, algorithm: MacAlgorithm.HS256, detachedPayload: deviceAuthenticationBytes },
+        ctx.cose.mac0
+      )
 
       deviceAuthOptions.deviceMac = deviceMac
     }

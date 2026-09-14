@@ -93,3 +93,14 @@ describe('mobile security object', () => {
     expect(decoded.status?.identifierList?.id).toEqual(new Uint8Array([0xab, 0xcd]))
   })
 })
+
+describe('mobile security object version (18013-5 8.1)', () => {
+  test('an unknown minor version is accepted', () => {
+    const mobileSecurityObject = MobileSecurityObject.decode(hex.decode(cbor.replace('63312e30', '63312e31')))
+    expect(mobileSecurityObject.version).toStrictEqual('1.1')
+  })
+
+  test('an unknown major version is rejected', () => {
+    expect(() => MobileSecurityObject.decode(hex.decode(cbor.replace('63312e30', '63322e30')))).toThrow()
+  })
+})

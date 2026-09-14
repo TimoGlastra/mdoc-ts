@@ -1,5 +1,6 @@
-import { CborStructure, TypedMap, typedMap } from '@owf/cose'
+import { TypedMap, typedMap } from '@owf/cose'
 import { z } from 'zod'
+import { OriginalBytesCborStructure } from '../original-bytes-cbor-structure'
 import { DeviceRetrievalMethod, type DeviceRetrievalMethodEncodedStructure } from './device-retrieval-method'
 import { ProtocolInfo, type ProtocolInfoStructure } from './protocol-info'
 import { Security, type SecurityEncodedStructure } from './security'
@@ -17,7 +18,8 @@ const deviceEngagementSchema = typedMap([
   [DeviceEngagementKeys.Version, z.string()],
   [DeviceEngagementKeys.Security, z.instanceof(Security)],
   [DeviceEngagementKeys.DeviceRetrievalMethods, z.array(z.instanceof(DeviceRetrievalMethod)).exactOptional()],
-  [DeviceEngagementKeys.ServerRetrievalMethods, z.array(z.instanceof(ServerRetrievalMethod)).exactOptional()],
+  // 18013-5 8.2.1.1: ServerRetrievalMethods = { ? "webApi" : WebApi, ? "oidc" : Oidc }, a single map.
+  [DeviceEngagementKeys.ServerRetrievalMethods, z.instanceof(ServerRetrievalMethod).exactOptional()],
   [DeviceEngagementKeys.ProtocolInfo, z.instanceof(ProtocolInfo).exactOptional()],
 ] as const)
 
@@ -28,11 +30,11 @@ export type DeviceEngagementOptions = {
   version: string
   security: Security
   deviceRetrievalMethods?: Array<DeviceRetrievalMethod>
-  serverRetrievalMethods?: Array<ServerRetrievalMethod>
+  serverRetrievalMethods?: ServerRetrievalMethod
   protocolInfo?: ProtocolInfo
 }
 
-export class DeviceEngagement extends CborStructure<
+export class DeviceEngagement extends OriginalBytesCborStructure<
   DeviceEngagementEncodedStructure,
   DeviceEngagementDecodedStructure
 > {
@@ -57,12 +59,11 @@ export class DeviceEngagement extends CborStructure<
         }
 
         if (input.has(DeviceEngagementKeys.ServerRetrievalMethods)) {
-          const serverMethods = input.get(
-            DeviceEngagementKeys.ServerRetrievalMethods
-          ) as ServerRetrievalMethodEncodedStructure[]
           map.set(
             DeviceEngagementKeys.ServerRetrievalMethods,
-            serverMethods.map((encoded) => ServerRetrievalMethod.fromEncodedStructure(encoded))
+            ServerRetrievalMethod.fromEncodedStructure(
+              input.get(DeviceEngagementKeys.ServerRetrievalMethods) as ServerRetrievalMethodEncodedStructure
+            )
           )
         }
 
@@ -90,10 +91,7 @@ export class DeviceEngagement extends CborStructure<
 
         const serverRetrievalMethods = output.get(DeviceEngagementKeys.ServerRetrievalMethods)
         if (serverRetrievalMethods) {
-          map.set(
-            DeviceEngagementKeys.ServerRetrievalMethods,
-            serverRetrievalMethods.map((srm) => srm.encodedStructure)
-          )
+          map.set(DeviceEngagementKeys.ServerRetrievalMethods, serverRetrievalMethods.encodedStructure)
         }
 
         const protocolInfo = output.get(DeviceEngagementKeys.ProtocolInfo)
@@ -127,7 +125,7 @@ export class DeviceEngagement extends CborStructure<
   }
 
   public static create(options: DeviceEngagementOptions): DeviceEngagement {
-    const map = new Map<number, unknown>([
+    const map: DeviceEngagementDecodedStructure = new TypedMap([
       [DeviceEngagementKeys.Version, options.version],
       [DeviceEngagementKeys.Security, options.security],
     ])
@@ -144,6 +142,6 @@ export class DeviceEngagement extends CborStructure<
       map.set(DeviceEngagementKeys.ProtocolInfo, options.protocolInfo)
     }
 
-    return this.fromEncodedStructure(map)
+    return this.fromDecodedStructure(map)
   }
 }

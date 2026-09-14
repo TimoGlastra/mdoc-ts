@@ -51,6 +51,23 @@ export class AgeOverLimitExceededError extends MdlError {}
  */
 export class InvalidDeviceRequestMatchOptionsError extends MdlError {}
 export class AtLeastOneCertificateRequiredError extends MdlError {}
+
+/**
+ * ISO/IEC 18013-5 8.3.2.1.2.2: a namespace must not have two or more elements with the same element
+ * identifier.
+ */
+export class DuplicateElementIdentifierError extends MdlError {}
+
+/**
+ * ISO/IEC 18013-5 9.1.2.4: "The validFrom element shall be equal or later than the signed element",
+ * and "the validUntil element shall be later than the validFrom element".
+ */
+export class InvalidValidityInfoError extends MdlError {}
+
+/**
+ * ISO/IEC 18013-5 9.1.3.5: the device MAC shall use HMAC 256/256.
+ */
+export class UnsupportedDeviceMacAlgorithmError extends MdlError {}
 export class SignatureAlgorithmDoesNotMatchSigningKeyAlgorithmError extends MdlError {}
 export class UnableToExtractX5ChainFromCwtError extends MdlError {}
 export class NoPublicKeySetOnStatusListError extends MdlError {}
@@ -80,6 +97,13 @@ export class InvalidRevocationListError extends MdlError {}
  * as the session transcript — and thus the anti-relay binding — cannot be computed without it.
  */
 export class MissingOriginError extends MdlError {}
+
+/**
+ * The origin is not an origin as the DC API provides it: the ASCII serialization of an origin
+ * (`scheme://host[:port]`), without a path, a trailing slash or a default port. The session transcript
+ * binds the exact origin, so any other form would not match the origin the other party uses.
+ */
+export class InvalidOriginError extends MdlError {}
 export class HpkeNotSupportedError extends MdlError {}
 
 /**

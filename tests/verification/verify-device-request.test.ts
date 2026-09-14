@@ -246,3 +246,34 @@ describe('Holder.verifyDeviceRequest age_over_NN request limit (18013-5 7.2.5)',
     ).rejects.toThrow(VerificationError)
   })
 })
+
+describe('Holder.verifyDeviceRequest version (18013-5 8.1)', () => {
+  const sessionTranscript = SessionTranscript.create({
+    handover: NullHandover.fromEncodedStructure(null),
+  })
+
+  const deviceRequestWithVersion = (version: string) =>
+    DeviceRequest.create({
+      version,
+      docRequests: [
+        DocRequest.create({
+          itemsRequest: ItemsRequest.create({
+            docType: 'org.iso.18013.5.1.mDL',
+            namespaces: { 'org.iso.18013.5.1': { family_name: false } },
+          }),
+        }),
+      ],
+    })
+
+  test('an unknown minor version PASSES', async () => {
+    await expect(
+      Holder.verifyDeviceRequest({ deviceRequest: deviceRequestWithVersion('1.1'), sessionTranscript }, mdocContext)
+    ).resolves.toBeUndefined()
+  })
+
+  test('an unknown major version FAILS', async () => {
+    await expect(
+      Holder.verifyDeviceRequest({ deviceRequest: deviceRequestWithVersion('2.0'), sessionTranscript }, mdocContext)
+    ).rejects.toThrow(VerificationError)
+  })
+})

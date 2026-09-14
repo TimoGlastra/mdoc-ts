@@ -41,8 +41,9 @@ describe('device response', () => {
   })
 })
 
-const signed = new Date()
-const validFrom = new Date(signed.getTime() - 60_000)
+// Signed a minute ago, so the MSO is valid from before the time of verification.
+const signed = new Date(Date.now() - 60_000)
+const validFrom = new Date(signed)
 const validUntil = new Date(signed.getTime() + 365 * 24 * 60 * 60 * 1000)
 
 const mdlDocType = 'org.iso.18013.5.1.mDL'

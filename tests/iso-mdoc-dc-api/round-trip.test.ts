@@ -1,3 +1,4 @@
+import { cborEncode } from '@owf/cose'
 import { base64url, hex } from '@owf/identity-common'
 import { describe, expect, test } from 'vitest'
 import {
@@ -12,9 +13,11 @@ import {
   InvalidDcApiRequestError,
   InvalidDcApiResponseError,
   InvalidEncryptionInfoError,
+  InvalidOriginError,
   IsoMdocDcApi,
   ItemsRequest,
   MissingOriginError,
+  RegisteredCwtHeaderClaimKey,
   type VerificationAssessment,
 } from '../../src'
 import { DEVICE_JWK_PRIVATE } from '../config'
@@ -403,7 +406,7 @@ describe('IsoMdocDcApi reader auth', () => {
       mdocContext
     )
 
-    const signatureCheck = checks.find((check) => check.check.includes('Signature is invalid on the reader auth'))
+    const signatureCheck = checks.find((check) => check.check === 'Reader auth signature must be valid')
     expect(signatureCheck?.status).toBe('FAILED')
   })
 
@@ -477,5 +480,110 @@ describe('IsoMdocDcApi payload validation', () => {
     )
 
     expect(deviceResponse.documents).toHaveLength(1)
+  })
+})
+
+describe('IsoMdocDcApi input handling', () => {
+  test.each([
+    ['a trailing slash', 'https://verifier.example.com/'],
+    ['a path', 'https://verifier.example.com/path'],
+    ['a default port', 'https://verifier.example.com:443'],
+    ['an upper case host', 'https://Verifier.example.com'],
+    ['an opaque origin', 'null'],
+    ['no scheme', 'verifier.example.com'],
+  ])('parseRequest rejects an origin with %s', async (_, invalidOrigin) => {
+    const { request } = await createRequest()
+
+    await expect(IsoMdocDcApi.parseRequest({ request, origin: invalidOrigin }, mdocContext)).rejects.toThrow(
+      InvalidOriginError
+    )
+  })
+
+  test('createRequest and decryptResponse reject an origin that is not serialized', async () => {
+    const { readerKey, readerCertificate } = await createReaderCertificate()
+    const { request } = await createRequest()
+
+    await expect(
+      IsoMdocDcApi.createRequest(
+        {
+          docRequests: [{ docType: mdlDocType, namespaces: requestedNamespaces }],
+          recipientPublicKey,
+          readerAuth: { signingKey: readerKey, certificateChain: [readerCertificate], origin: `${origin}/` },
+        },
+        mdocContext
+      )
+    ).rejects.toThrow(InvalidOriginError)
+
+    await expect(
+      IsoMdocDcApi.decryptResponse(
+        {
+          response: 'aGVsbG8',
+          origin: `${origin}/`,
+          encryptionInfo: request.encryptionInfo,
+          recipientKey: recipientPrivateKey,
+        },
+        mdocContext
+      )
+    ).rejects.toThrow(InvalidOriginError)
+  })
+
+  test.each([
+    ['encryption info that is not CBOR', { encryptionInfo: base64url.encode(Uint8Array.of(0xff)) }],
+    ['encryption info of another structure', { encryptionInfo: base64url.encode(cborEncode(['dcapi', 1])) }],
+    ['a device request that is not CBOR', { deviceRequest: base64url.encode(Uint8Array.of(0xff)) }],
+    ['a device request of another structure', { deviceRequest: base64url.encode(cborEncode(new Map())) }],
+  ])('parseRequest rejects %s', async (_, override) => {
+    const { request } = await createRequest()
+
+    await expect(
+      IsoMdocDcApi.parseRequest({ request: { ...request, ...override }, origin }, mdocContext)
+    ).rejects.toThrow(InvalidDcApiRequestError)
+  })
+
+  test('decryptResponse rejects an encrypted response of another structure', async () => {
+    const { request } = await createRequest()
+
+    await expect(
+      IsoMdocDcApi.decryptResponse(
+        {
+          response: base64url.encode(cborEncode(['dcapi', 'not a map'])),
+          origin,
+          encryptionInfo: request.encryptionInfo,
+          recipientKey: recipientPrivateKey,
+        },
+        mdocContext
+      )
+    ).rejects.toThrow(InvalidDcApiResponseError)
+  })
+
+  test('reader auth without a certificate FAILS through the verification callback', async () => {
+    const { readerKey, readerCertificate } = await createReaderCertificate()
+    const { request, deviceRequest } = await IsoMdocDcApi.createRequest(
+      {
+        docRequests: [{ docType: mdlDocType, namespaces: requestedNamespaces }],
+        recipientPublicKey,
+        readerAuth: { signingKey: readerKey, certificateChain: [readerCertificate], origin },
+      },
+      mdocContext
+    )
+
+    const [docRequest] = deviceRequest.docRequests
+    docRequest.readerAuth?.unprotectedHeaders.headers?.delete(RegisteredCwtHeaderClaimKey.X5Chain)
+    const withoutCertificate = base64url.encode(deviceRequest.encode())
+
+    const checks: Array<VerificationAssessment> = []
+    await IsoMdocDcApi.parseRequest(
+      {
+        request: { ...request, deviceRequest: withoutCertificate },
+        origin,
+        disableReaderCertificateChainValidation: true,
+        verificationCallback: (check) => checks.push(check),
+      },
+      mdocContext
+    )
+
+    const signatureCheck = checks.find((check) => check.check === 'Reader auth signature must be valid')
+    expect(signatureCheck?.status).toBe('FAILED')
+    expect(signatureCheck?.reason).toContain('Unable to verify the reader auth signature')
   })
 })

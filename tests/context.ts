@@ -82,9 +82,9 @@ export const mdocContext: MdocContext = {
   },
 
   x509: {
-    getIssuerNameField: (input) => {
+    getSubjectNameField: (input) => {
       const certificate = new X509Certificate(input.certificate)
-      return certificate.issuerName.getField(input.field)
+      return certificate.subjectName.getField(input.field)
     },
     getPublicKey: async (input) => {
       const certificate = new X509Certificate(input.certificate)
@@ -198,11 +198,22 @@ export const mdocContext: MdocContext = {
   },
 }
 
-export const deterministicMdocContext = {
-  ...mdocContext,
-  crypto: {
-    ...mdocContext.crypto,
-    random: (len: number) =>
-      hex.decode('9bdb72498967865710108af43959f90c1b6aac9687bedd1fa53dd0d2103fa5d0').slice(0, len),
-  },
+/**
+ * A context whose random values are the same for every context, but differ per call, so that for
+ * instance digest IDs within a namespace stay unique.
+ */
+export const createDeterministicMdocContext = () => {
+  let counter = 0
+
+  return {
+    ...mdocContext,
+    crypto: {
+      ...mdocContext.crypto,
+      random: (len: number) => {
+        const bytes = hex.decode('9bdb72498967865710108af43959f90c1b6aac9687bedd1fa53dd0d2103fa5d0').slice(0, len)
+        bytes[0] ^= counter++
+        return bytes
+      },
+    },
+  }
 }
